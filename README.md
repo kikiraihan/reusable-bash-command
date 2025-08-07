@@ -11,7 +11,7 @@
 
 Berikut beberapa script reusable yang tersedia di repo ini:
 
-### 1. `generate_structure_no_tree.sh`
+### 1. `generate_project_structure.sh`
 
 Script ini digunakan untuk:
 
@@ -22,13 +22,13 @@ Script ini digunakan untuk:
 #### 🔧 Cara Menggunakan
 
 ```bash
-./generate_structure_no_tree.sh [folder_yang_ingin_diabaikan...]
+./generate_project_structure.sh [folder_yang_ingin_diabaikan...]
 ````
 
 Contoh:
 
 ```bash
-./generate_structure_no_tree.sh .git node_modules target build
+./generate_project_structure.sh .git node_modules target build
 ```
 
 #### 📂 Output yang Dihasilkan
