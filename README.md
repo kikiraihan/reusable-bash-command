@@ -11,6 +11,7 @@ Dibuat oleh [@kikiraihan](https://github.com/kikiraihan)
 Script untuk menghasilkan:
 
 - Struktur direktori proyek (mirip `tree`, tapi tanpa dependensi eksternal)
+- Berguna untuk memberikan konteks kepada AI LLM ketika ingin memberi perintah
 - Daftar semua file dalam format JSON
 - Mendukung pengecualian folder yang tidak ingin disertakan
 
