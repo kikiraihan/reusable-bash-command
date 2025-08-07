@@ -1,25 +1,20 @@
+# Reusable Bash Command
 
-# Reusable-Bash-Command
+Kumpulan script Bash yang dapat digunakan ulang untuk kebutuhan scripting dan otomasi proyek, seperti analisis struktur direktori, pengelolaan file, logging, dan lainnya.
 
-📦 Kumpulan script Bash yang dapat digunakan ulang (reusable) untuk berbagai kebutuhan scripting dan otomasi proyek, seperti analisis struktur direktori, pengelolaan file, logging, dan lainnya.
-
-> Dibuat oleh [@kikiraihan](https://github.com/kikiraihan) — silakan fork, modifikasi, dan gunakan!
+Dibuat oleh [@kikiraihan](https://github.com/kikiraihan)
 
 ---
 
-## 📁 Daftar Script
+## generate_project_structure.sh
 
-Berikut beberapa script reusable yang tersedia di repo ini:
+Script untuk menghasilkan:
 
-### 1. `generate_project_structure.sh`
+- Struktur direktori proyek (mirip `tree`, tapi tanpa dependensi eksternal)
+- Daftar semua file dalam format JSON
+- Mendukung pengecualian folder yang tidak ingin disertakan
 
-Script ini digunakan untuk:
-
-- Menampilkan struktur direktori proyek seperti output `tree`, **tanpa perlu menginstal `tree`**.
-- Menghasilkan daftar file dalam format **JSON array**.
-- Mendukung pengecualian folder tertentu agar tidak disertakan dalam hasil.
-
-#### 🔧 Cara Menggunakan
+### Cara Pakai
 
 ```bash
 ./generate_project_structure.sh [folder_yang_ingin_diabaikan...]
@@ -31,59 +26,30 @@ Contoh:
 ./generate_project_structure.sh .git node_modules target build
 ```
 
-#### 📂 Output yang Dihasilkan
+### Output
 
-1. **`struktur_folder_project.txt`**
-   Berisi struktur direktori dengan indentasi dan garis seperti `tree`.
+* `struktur_folder_project.txt`
+  Struktur direktori dengan indentasi seperti:
 
-   Contoh:
+  ```
+  ├── config/
+      ├── SecurityConfig.java
+  ├── controller/
+      ├── ProductController.java
+  ```
 
-   ```
-   ├── AplikasiMinibankApplication.java
-   ├── config/
-       ├── SecurityConfig.java
-   ├── controller/
-       ├── ProductController.java
-       └── rest/
-           ├── AccountRestController.java
-           └── UserRestController.java
-   ```
+* `list_file_project.json`
+  JSON array dari semua path file:
 
-2. **`list_file_project.json`**
-   Berisi array JSON semua path file relatif dari root folder.
-
-   Contoh:
-
-   ```json
-   [
-     "AplikasiMinibankApplication.java",
-     "config/SecurityConfig.java",
-     "controller/ProductController.java"
-   ]
-   ```
-
-#### 📝 Catatan
-
-* Tidak menggunakan `tree` → jadi lebih portable.
-* Direkomendasikan untuk digunakan sebagai bagian dari CI, dokumentasi proyek, atau build pipeline.
+  ```json
+  [
+    "config/SecurityConfig.java",
+    "controller/ProductController.java"
+  ]
+  ```
 
 ---
 
-## 🛠️ Kontribusi
+## Others
 
-Sumbangan script Bash lainnya sangat dipersilakan!
-Pastikan script yang kamu tambahkan:
-
-* Reusable untuk konteks umum
-* Tidak tergantung library luar jika memungkinkan
-* Dilengkapi komentar dan dokumentasi singkat
-
----
-
-## 🧾 Lisensi
-
-MIT License © [kikiraihan](https://github.com/kikiraihan)
-
-```
-
----
+Script lain akan ditambahkan di sini bila tersedia.
