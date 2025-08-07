@@ -1,5 +1,5 @@
 
-# 🔁 reusable-bash-command
+# Reusable-Bash-Command
 
 📦 Kumpulan script Bash yang dapat digunakan ulang (reusable) untuk berbagai kebutuhan scripting dan otomasi proyek, seperti analisis struktur direktori, pengelolaan file, logging, dan lainnya.
 
