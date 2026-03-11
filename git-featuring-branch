@@ -1,0 +1,249 @@
+# command untuk buat branch baru dari master, langsung push, dan set upstream
+# Fungsi GFB (Git Feature Branch) dengan opsi push
+# contoh penggunaan:
+# gfb master fitur-keren
+# gfb -p master fitur-keren
+# gfb -p develop fitur-keren
+gfb() {
+  local push_to_origin=false
+  local base_branch=""
+  local branch_name=""
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -p|--push) push_to_origin=true ;;
+      *)
+        if [ -z "$base_branch" ]; then
+          base_branch="$1"
+        elif [ -z "$branch_name" ]; then
+          branch_name="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Validasi input
+  if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
+    echo "❌ Gunakan: gfb [-p] <base-branch> <nama-branch-baru>"
+    echo "Contoh:"
+    echo "  gfb master fitur-login"
+    echo "  gfb develop fitur-payment"
+    echo "  gfb -p develop fitur-api"
+    return 1
+  fi
+
+  echo "🔄 Pulling newest $base_branch..."
+  git checkout "$base_branch" && git pull origin "$base_branch"
+
+  if [ $? -ne 0 ]; then
+    echo "⚠️ Gagal update $base_branch. Cek apakah ada uncommitted changes."
+    return 1
+  fi
+
+  echo "🌿 Membuat branch: $branch_name dari $base_branch"
+  git checkout -b "$branch_name"
+
+  if [ "$push_to_origin" = true ]; then
+    echo "🚀 Push dan set upstream..."
+    git push -u origin "$branch_name"
+    echo "✅ Berhasil dibuat dan di-push!"
+  else
+    echo "📍 Branch dibuat secara lokal."
+    echo "Gunakan: git push -u origin $branch_name"
+  fi
+}
+
+# Git Feature Branch Cleaner
+# Menghapus branch yang sudah merged ke base branch
+# Aman: ignore branch penting + bisa pilih branch
+#
+# contoh:
+# gfbclean master
+#
+# contoh dengan filter:
+# gfbclean master -f kiki
+#
+# contoh input pilihan:
+# 1 3 5
+# 1,3,5
+# all
+#
+# output:
+# 🗑 Branch yang bisa dihapus:
+# [1] feature/login
+# [2] feature/payment
+# [3] bugfix/token
+# Pilih nomor branch (contoh: 1 3 atau 1,3) atau ketik 'all' untuk semua:
+gfbclean() {
+local base_branch=""
+local filter=""
+# parse arg
+while [[ "$#" -gt 0 ]]; do
+case $1 in
+-f|--filter)
+filter="$2"
+shift
+        ;;
+      *)
+base_branch="$1"
+        ;;
+esac
+shift
+done
+if [ -z "$base_branch" ]; then
+echo "❌ Gunakan: gfbclean <base-branch> [-f keyword]"
+return 1
+fi
+echo "🔄 Pulling newest $base_branch..."
+git checkout "$base_branch" && git pull origin "$base_branch" || return 1
+echo "🔍 Mencari branch yang sudah merged ke $base_branch..."
+branches=$(git branch --merged "$base_branch" \
+    | sed 's/^[* ]*//' \
+    | grep -vE '^(master|main|develop|staging|production)$')
+if [ -n "$filter" ]; then
+branches=$(echo "$branches" | grep "$filter")
+fi
+if [ -z "$branches" ]; then
+echo "✅ Tidak ada branch yang cocok untuk dibersihkan."
+return 0
+fi
+echo ""
+echo "🗑 Branch yang bisa dihapus:"
+i=1
+declare -a branch_list
+while read -r branch; do
+echo "[$i] $branch"
+branch_list[$i]="$branch"
+    ((i++))
+done <<< "$branches"
+echo ""
+read "selection?Pilih nomor branch (contoh: 1,3 atau 1,3,5) atau ketik 'all' untuk semua: "
+# ubah koma jadi spasi lalu split ke array (zsh-safe)
+local selection_clean=$(echo "$selection" | tr ',' ' ')
+read -A nums <<< "$selection_clean"
+
+selected_branches=()
+if [[ "$selection" == "all" ]]; then
+selected_branches=("${branch_list[@]}")
+else
+for num in "${nums[@]}"; do
+    [[ "$num" =~ ^[0-9]+$ ]] && selected_branches+=("${branch_list[$num]}")
+done
+fi
+echo ""
+echo "Branch yang akan dihapus:"
+for b in "${selected_branches[@]}"; do
+    [ -z "$b" ] && continue
+echo "- $b"
+done
+echo ""
+read "confirm?Lanjutkan hapus branch di atas? (y/N): "
+if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+echo "❌ Dibatalkan."
+return 0
+fi
+for branch in "${selected_branches[@]}"; do
+    [ -z "$branch" ] && continue
+echo "➡️ Hapus local: $branch"
+git branch -d "$branch"
+echo "➡️ Hapus origin: $branch"
+git push origin --delete "$branch"
+done
+echo "✅ Selesai membersihkan branch."
+}
+
+# Git Feature Branch Checker
+# Menampilkan branch yang BELUM merged ke base branch
+# Aman: ignore branch penting
+#
+# contoh:
+# gfbcheck master
+#
+# contoh dengan filter:
+# gfbcheck master -f kiki
+#
+# output:
+# 🔍 Branch yang belum merged ke master:
+# [1] feature/login
+# [2] feature/payment
+# [3] bugfix/token
+gfbcheck() {
+local base_branch=""
+local filter=""
+# parse arg
+while [[ "$#" -gt 0 ]]; do
+case $1 in
+-f|--filter)
+filter="$2"
+shift
+        ;;
+      *)
+base_branch="$1"
+        ;;
+esac
+shift
+done
+if [ -z "$base_branch" ]; then
+echo "❌ Gunakan: gfbcheck <base-branch> [-f keyword]"
+return 1
+fi
+local original_branch=$(git rev-parse --abbrev-ref HEAD)
+
+echo "🔄 Pulling newest $base_branch..."
+git checkout "$base_branch" && git pull origin "$base_branch" || return 1
+echo "🔍 Mencari branch yang belum merged ke $base_branch..."
+branches=$(git branch --no-merged "$base_branch" \
+    | sed 's/^[* ]*//' \
+    | grep -vE '^(master|main|develop|staging|production)$')
+if [ -n "$filter" ]; then
+branches=$(echo "$branches" | grep "$filter")
+fi
+if [ -z "$branches" ]; then
+echo "✅ Semua branch sudah merged ke $base_branch."
+return 0
+fi
+echo ""
+echo "🌿 Branch yang belum merged ke $base_branch:"
+i=1
+while read -r branch; do
+echo "[$i] $branch"
+    ((i++))
+done <<< "$branches"
+echo ""
+echo "Total: $((i-1)) branch"
+echo ""
+echo "🔙 Kembali ke branch: $original_branch"
+git checkout "$original_branch"
+}
+
+# gfblog master                        → compare master vs current branch
+# gfblog master feature/login          → compare master vs feature/login
+gfblog() {
+  local base_branch="${1:-master}"
+  local target_branch="${2:-$(git rev-parse --abbrev-ref HEAD)}"
+
+  if [ "$target_branch" = "$base_branch" ]; then
+    echo "⚠️  Target branch sama dengan base branch ($base_branch)."
+    return 1
+  fi
+
+  local commits=$(git log "$base_branch".."$target_branch" --oneline --no-decorate)
+
+  if [ -z "$commits" ]; then
+    echo "✅ Tidak ada commit baru dibanding $base_branch."
+    return 0
+  fi
+
+  echo ""
+  echo "🌿 Target branch : $target_branch"
+  echo "📌 Base branch   : $base_branch"
+  echo ""
+  echo "📋 Commit yang belum ada di $base_branch:"
+  echo "$commits" | while read -r line; do
+    echo "  - $line"
+  done
+  echo ""
+  echo "Total: $(echo "$commits" | wc -l | tr -d ' ') commit"
+}
