@@ -2,6 +2,18 @@
 # GIT HELPER ALIAS
 #------------------------------------
 
+# setup
+# 1. Daftar gratis di https://console.groq.com → Create API Key
+# 2. Tambah ke .zshrc
+export GROQ_API_KEY="***"
+
+# Model Kecepatan Kualitas
+# llama-3.3-70b-versatile Sedang⭐⭐⭐⭐⭐ (default kita)
+# llama3-8b-8192 Sangat cepat⭐⭐⭐
+# gemma2-9b-it Cepat⭐⭐⭐
+# qwen-qwq-32b Lambat⭐⭐⭐⭐⭐ (reasoning)
+# mistral-saba-24b Sedang⭐⭐⭐⭐
+
 # command untuk buat branch baru dari master, langsung push, dan set upstream
 # Fungsi GFB (Git Feature Branch) dengan opsi push
 # contoh penggunaan:
@@ -480,6 +492,168 @@ gfbls() {
   echo ""
 }
 
+# Git Feature Branch PR Generator
+# Generate PR title & description dari commit log menggunakan Groq API (LLM gratis)
+# Requires: GROQ_API_KEY di environment
+#
+# contoh:
+# gfbpr master                        → generate PR dari master vs current branch
+# gfbpr master kiki/feat/SP-829       → generate PR dari master vs branch tertentu
+# gfbpr master -m llama3-8b-8192      → pilih model manual
+gfbpr() {
+  local base_branch="master"
+  local target_branch=$(git rev-parse --abbrev-ref HEAD)
+  local model="llama-3.3-70b-versatile"  # default model gratis groq
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -m|--model)
+        model="$2"
+        shift
+        ;;
+      *)
+        if [ "$1" = "$base_branch" ] || [ -z "$base_branch" ]; then
+          base_branch="$1"
+        else
+          target_branch="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Validasi API key
+  if [ -z "$GROQ_API_KEY" ]; then
+    echo "❌ GROQ_API_KEY belum di-set."
+    echo "Daftar gratis di https://console.groq.com lalu:"
+    echo "  export GROQ_API_KEY=\"gsk_xxxxxx\""
+    return 1
+  fi
+
+  # Validasi branch tidak sama
+  if [ "$target_branch" = "$base_branch" ]; then
+    echo "⚠️  Target branch sama dengan base branch ($base_branch)."
+    return 1
+  fi
+
+  # Ambil commit log
+  local commits
+  commits=$(git log "$base_branch".."$target_branch" --oneline --no-decorate 2>/dev/null)
+
+  if [ -z "$commits" ]; then
+    echo "✅ Tidak ada commit baru dibanding $base_branch."
+    return 0
+  fi
+
+  local commit_count=$(echo "$commits" | wc -l | tr -d ' ')
+
+  echo ""
+  echo "🌿 Target branch : $target_branch"
+  echo "📌 Base branch   : $base_branch"
+  echo "📋 Total commit  : $commit_count"
+  echo "🤖 Model         : $model"
+  echo ""
+  echo "⏳ Generating PR dengan Groq..."
+  echo ""
+
+  # Buat prompt
+  local prompt="You are an assistant that helps generate Pull Request (PR) titles and descriptions from a list of git commits.
+Your task:
+1. Analyze the provided commit list.
+2. Identify the main themes of the changes (feature, fix, refactor, security, etc).
+3. Generate a clean and professional Pull Request title.
+4. Generate a well-structured PR description suitable for GitHub.
+Rules:
+- Use Conventional Commit style for the PR title (feat, fix, chore, refactor, docs, test).
+- The title should summarize the most important change in the PR.
+- The description must be concise but structured.
+Always format the PR description with the following sections:
+## Summary
+A short paragraph summarizing the purpose of the PR.
+## Changes
+Group related changes into logical categories such as:
+- Security
+- Features
+- Improvements
+- Bug Fixes
+- Refactor
+- Testing
+- Cleanup
+Use bullet points for each change.
+## Impact
+Explain the benefit or impact of the changes.
+## Testing
+Suggest or infer reasonable testing steps if applicable.
+Additional behavior:
+- If commits contain typos, automatically normalize them.
+- If commits overlap in theme, group them together.
+- If commits are unclear, infer the most likely intention.
+- Prefer clarity and readability over repeating every commit line.
+When I paste a commit list, return only:
+1. PR Title
+2. PR Description
+
+Here are the commits:
+$commits"
+
+  # Kirim ke Groq API — python3 build JSON, curl yang kirim
+  # (urllib diblokir Cloudflare dengan 403, curl lolos)
+  local json_payload
+  json_payload=$(python3 -c "
+import sys, json
+prompt = sys.argv[1]
+model  = sys.argv[2]
+print(json.dumps({
+    'model': model,
+    'messages': [{'role': 'user', 'content': prompt}],
+    'temperature': 0.3
+}))
+" "$prompt" "$model" 2>/dev/null)
+
+  local response
+  response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+    -H "Authorization: Bearer $GROQ_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "$json_payload")
+
+  # Cek error dari API
+  local error
+  error=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[1])
+  print(d.get('error', {}).get('message', ''))
+except: pass
+" "$response" 2>/dev/null)
+
+  if [ -n "$error" ]; then
+    echo "❌ Groq API error: $error"
+    return 1
+  fi
+
+  # Ekstrak hasil
+  local result
+  result=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[1])
+  print(d['choices'][0]['message']['content'])
+except Exception as e:
+  print('❌ Parse error:', e)
+" "$response" 2>/dev/null)
+
+  echo "$result"
+  echo ""
+
+  # Tanya apakah mau copy ke clipboard
+  read "copy?📋 Copy ke clipboard? (y/N): "
+  if [[ "$copy" == "y" || "$copy" == "Y" ]]; then
+    echo "$result" | pbcopy
+    echo "✅ Sudah di-copy ke clipboard!"
+  fi
+}
+
 # Git Feature Branch Conflict Checker
 # Cek apakah ada conflict antar branch tanpa benar-benar merge
 #
@@ -617,6 +791,18 @@ gfbmain() {
   echo "    gfblog master feature/login     → compare master vs feature/login"
   echo ""
 
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbpr — Generate PR title & description via Groq AI"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbpr [base-branch] [target-branch] [-m model]"
+  echo "  Default : base=master, target=branch aktif, model=llama-3.3-70b-versatile"
+  echo "  Opsi    : -m / --model  → pilih model Groq"
+  echo "  Contoh  :"
+  echo "    gfbpr master                        → current branch vs master"
+  echo "    gfbpr master kiki/feat/SP-829       → branch spesifik"
+  echo "    gfbpr master -m llama3-8b-8192      → pakai model lain"
+  echo "  Setup   : export GROQ_API_KEY=\"gsk_xxxxxx\" di .zshrc"
+  echo ""
   echo "──────────────────────────────────────────────────────────────"
   echo "  gfbconflict — Cek conflict antar branch tanpa merge sungguhan"
   echo "──────────────────────────────────────────────────────────────"
