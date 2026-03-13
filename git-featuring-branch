@@ -7,13 +7,6 @@
 # 2. Tambah ke .zshrc
 export GROQ_API_KEY="***"
 
-# Model Kecepatan Kualitas
-# llama-3.3-70b-versatile Sedang⭐⭐⭐⭐⭐ (default kita)
-# llama3-8b-8192 Sangat cepat⭐⭐⭐
-# gemma2-9b-it Cepat⭐⭐⭐
-# qwen-qwq-32b Lambat⭐⭐⭐⭐⭐ (reasoning)
-# mistral-saba-24b Sedang⭐⭐⭐⭐
-
 # command untuk buat branch baru dari master, langsung push, dan set upstream
 # Fungsi GFB (Git Feature Branch) dengan opsi push
 # contoh penggunaan:
@@ -500,6 +493,14 @@ gfbls() {
 # gfbpr master                        → generate PR dari master vs current branch
 # gfbpr master kiki/feat/SP-829       → generate PR dari master vs branch tertentu
 # gfbpr master -m llama3-8b-8192      → pilih model manual
+
+# Model Kecepatan Kualitas
+# llama-3.3-70b-versatile Sedang⭐⭐⭐⭐⭐ (default kita)
+# llama3-8b-8192 Sangat cepat⭐⭐⭐
+# gemma2-9b-it Cepat⭐⭐⭐
+# qwen-qwq-32b Lambat⭐⭐⭐⭐⭐ (reasoning)
+# mistral-saba-24b Sedang⭐⭐⭐⭐
+
 gfbpr() {
   local base_branch="master"
   local target_branch=$(git rev-parse --abbrev-ref HEAD)
