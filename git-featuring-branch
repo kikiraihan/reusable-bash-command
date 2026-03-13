@@ -480,6 +480,88 @@ gfbls() {
   echo ""
 }
 
+# Git Feature Branch Conflict Checker
+# Cek apakah ada conflict antar branch tanpa benar-benar merge
+#
+# contoh:
+# gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927
+# gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march
+#
+# output:
+# ✅ kiki/feat/SP-829 → tidak ada conflict dengan master
+# ⚠️  kiki/feat/SP-927 → conflict dengan kiki/feat/SP-829
+gfbconflict() {
+  if [ "$#" -lt 2 ]; then
+    echo "❌ Gunakan: gfbconflict <base-branch> <branch1> <branch2> ..."
+    echo "Contoh:"
+    echo "  gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
+    return 1
+  fi
+
+  local base_branch="$1"
+  shift
+  local branches=("$@")
+  local original_branch=$(git rev-parse --abbrev-ref HEAD)
+  local temp_branch="__gfbconflict_temp__"
+  local has_conflict=false
+
+  # Pastikan working tree bersih
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "⚠️  Ada uncommitted changes. Stash atau commit dulu sebelum cek conflict."
+    return 1
+  fi
+
+  echo ""
+  echo "🔍 Base branch : $base_branch"
+  echo "📋 Branch yang dicek: ${(j:, :)branches}"
+  echo ""
+
+  # Update base branch dulu
+  echo "🔄 Pulling newest $base_branch..."
+  git checkout "$base_branch" && git pull origin "$base_branch" --quiet || return 1
+  echo ""
+
+  # Buat temp branch dari base
+  git checkout -b "$temp_branch" --quiet
+
+  local -a clean_list
+  local -a conflict_list
+
+  for branch in "${branches[@]}"; do
+    # Coba merge --no-commit --no-ff
+    git merge --no-commit --no-ff "$branch" --quiet 2>/dev/null
+    local merge_result=$?
+
+    if [ $merge_result -ne 0 ]; then
+      # Ada conflict
+      local conflict_files=$(git diff --name-only --diff-filter=U)
+      conflict_list+=("$branch")
+      echo "  ⚠️  $branch → CONFLICT"
+      echo "$conflict_files" | while read -r f; do
+        [ -n "$f" ] && echo "       └─ $f"
+      done
+    else
+      clean_list+=("$branch")
+      echo "  ✅ $branch → aman"
+    fi
+
+    # Abort merge & reset ke base agar cek berikutnya fresh
+    git merge --abort 2>/dev/null
+    git reset --hard "$base_branch" --quiet
+  done
+
+  # Cleanup: hapus temp branch, balik ke semula
+  git checkout "$original_branch" --quiet
+  git branch -D "$temp_branch" --quiet
+
+  echo ""
+  echo "══════════════════════════════════════════"
+  echo "  ✅ Aman    : ${#clean_list[@]} branch"
+  echo "  ⚠️  Conflict: ${#conflict_list[@]} branch"
+  echo "══════════════════════════════════════════"
+  echo ""
+}
+
 # GFB Main — menampilkan daftar semua perintah GFB beserta usage-nya
 # Gunakan: gfbmain --help
 gfbmain() {
@@ -535,6 +617,14 @@ gfbmain() {
   echo "    gfblog master feature/login     → compare master vs feature/login"
   echo ""
 
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbconflict — Cek conflict antar branch tanpa merge sungguhan"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbconflict <base-branch> <branch1> <branch2> ..."
+  echo "  Contoh  :"
+  echo "    gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
+  echo "    gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march"
+  echo ""
   echo "──────────────────────────────────────────────────────────────"
   echo "  gfbls — Tampilkan branch yang mengandung keyword tertentu"
   echo "──────────────────────────────────────────────────────────────"
