@@ -1,4 +1,3 @@
-
 #------------------------------------
 # GIT HELPER ALIAS
 #------------------------------------
@@ -101,8 +100,13 @@ if [ -z "$base_branch" ]; then
 echo "❌ Gunakan: gfbclean <base-branch> [-f keyword]"
 return 1
 fi
+local original_branch=$(git rev-parse --abbrev-ref HEAD)
+
+# Tangkap Ctrl+C: balik ke branch semula sebelum exit
+trap "echo ''; echo '🔙 Kembali ke branch: $original_branch'; git checkout \"$original_branch\"; trap - INT; return 1" INT
+
 echo "🔄 Pulling newest $base_branch..."
-git checkout "$base_branch" && git pull origin "$base_branch" || return 1
+git checkout "$base_branch" && git pull origin "$base_branch" || { trap - INT; return 1; }
 echo "🔍 Mencari branch yang sudah merged ke $base_branch..."
 branches=$(git branch --merged "$base_branch" \
     | sed 's/^[* ]*//' \
@@ -157,6 +161,10 @@ echo "➡️ Hapus origin: $branch"
 git push origin --delete "$branch"
 done
 echo "✅ Selesai membersihkan branch."
+echo ""
+echo "🔙 Kembali ke branch: $original_branch"
+git checkout "$original_branch"
+trap - INT  # reset trap setelah selesai normal
 }
 
 # Git Feature Branch Checker
@@ -343,5 +351,156 @@ gfbfind() {
     echo "  [$i] $branch"
     ((i++))
   done <<< "$found_branches"
+  echo ""
+}
+
+# Git Feature Branch List
+# Menampilkan list branch yang mengandung keyword tertentu
+# Opsional: -r untuk include remote branches
+#
+# contoh:
+# gfbls kiki
+# gfbls kiki -r
+gfbls() {
+  local keyword=""
+  local include_remote=false
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -r|--remote) include_remote=true ;;
+      *)
+        if [ -z "$keyword" ]; then
+          keyword="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Validasi input
+  if [ -z "$keyword" ]; then
+    echo "❌ Gunakan: gfbls <keyword> [-r]"
+    echo "Contoh:"
+    echo "  gfbls kiki"
+    echo "  gfbls feature -r"
+    return 1
+  fi
+
+  # Tentukan flag: local saja atau termasuk remote
+  local branch_flag=""
+  if [ "$include_remote" = true ]; then
+    branch_flag="-a"
+  fi
+
+  local branches
+  branches=$(git branch $branch_flag \
+    | sed 's/^[* ]*//' \
+    | sed 's|^remotes/||' \
+    | grep "$keyword")
+
+  if [ -z "$branches" ]; then
+    echo "⚠️  Tidak ada branch yang mengandung keyword: '$keyword'"
+    return 0
+  fi
+
+  local count=$(echo "$branches" | wc -l | tr -d ' ')
+  local mode="local"
+  [ "$include_remote" = true ] && mode="local + remote"
+
+  echo ""
+  echo "🔍 Keyword  : $keyword"
+  echo "🌐 Mode     : $mode"
+  echo "📋 Ditemukan: $count branch"
+  echo ""
+  i=1
+  while read -r branch; do
+    [ -z "$branch" ] && continue
+    echo "  [$i] $branch"
+    ((i++))
+  done <<< "$branches"
+  echo ""
+}
+
+# GFB Main — menampilkan daftar semua perintah GFB beserta usage-nya
+# Gunakan: gfbmain --help
+gfbmain() {
+  if [[ "$1" != "--help" ]]; then
+    echo "❓ Gunakan: gfbmain --help"
+    return 1
+  fi
+
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════╗"
+  echo "║           🌿 GFB — Git Feature Branch Toolkit               ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfb — Buat branch baru dari base branch"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfb [-p] <base-branch> <nama-branch-baru>"
+  echo "  Opsi    : -p / --push   → langsung push & set upstream"
+  echo "  Contoh  :"
+  echo "    gfb master fitur-login          → buat branch lokal"
+  echo "    gfb -p develop fitur-payment    → buat + push ke origin"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbclean — Hapus branch yang sudah merged"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbclean <base-branch> [-f keyword]"
+  echo "  Opsi    : -f / --filter → filter nama branch"
+  echo "  Contoh  :"
+  echo "    gfbclean master                 → lihat & hapus branch merged"
+  echo "    gfbclean master -f feature      → filter branch mengandung 'feature'"
+  echo "  Input   : nomor (1,3,5), spasi (1 3 5), atau 'all'"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbcheck — Cek branch yang belum merged"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbcheck <base-branch> [-f keyword]"
+  echo "  Opsi    : -f / --filter → filter nama branch"
+  echo "  Contoh  :"
+  echo "    gfbcheck master                 → tampilkan branch belum merged"
+  echo "    gfbcheck develop -f bugfix      → filter branch mengandung 'bugfix'"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfblog — Lihat commit di branch yang belum ada di base"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfblog [base-branch] [target-branch]"
+  echo "  Default : base=master, target=branch aktif saat ini"
+  echo "  Contoh  :"
+  echo "    gfblog master                   → compare master vs current branch"
+  echo "    gfblog master feature/login     → compare master vs feature/login"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbls — Tampilkan branch yang mengandung keyword tertentu"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbls <keyword> [-r]"
+  echo "  Opsi    : -r / --remote  → include remote branches"
+  echo "  Contoh  :"
+  echo "    gfbls kiki                      → cari branch mengandung 'kiki'"
+  echo "    gfbls feature -r                → cari termasuk remote"
+  echo ""
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbfind — Cari commit ada di branch mana saja"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbfind <commit-hash> [-r] [-f keyword]"
+  echo "  Opsi    : -r / --remote  → include remote branches"
+  echo "            -f / --filter  → filter nama branch"
+  echo "  Contoh  :"
+  echo "    gfbfind 56c97cde                → cari di local branches"
+  echo "    gfbfind 56c97cde -r             → cari termasuk remote"
+  echo "    gfbfind 56c97cde -r -f feature  → cari + filter nama branch"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbmain — Tampilkan bantuan semua perintah GFB"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbmain --help"
   echo ""
 }
