@@ -1,11 +1,13 @@
+
 #------------------------------------
 # GIT HELPER ALIAS
 #------------------------------------
 
-# setup
-# 1. Daftar gratis di https://console.groq.com → Create API Key
-# 2. Tambah ke .zshrc
+# setup AI provider untuk gfbpr
+# Groq  → daftar gratis di https://console.groq.com
+# Gemini → daftar gratis di https://aistudio.google.com/apikey
 export GROQ_API_KEY="***"
+export GEMINI_API_KEY="***"
 
 # command untuk buat branch baru dari master, langsung push, dan set upstream
 # Fungsi GFB (Git Feature Branch) dengan opsi push
@@ -486,49 +488,79 @@ gfbls() {
 }
 
 # Git Feature Branch PR Generator
-# Generate PR title & description dari commit log menggunakan Groq API (LLM gratis)
-# Requires: GROQ_API_KEY di environment
+# Generate PR title & description dari commit log menggunakan Groq atau Gemini
+# Requires: GROQ_API_KEY atau GEMINI_API_KEY di environment
 #
 # contoh:
-# gfbpr master                        → generate PR dari master vs current branch
-# gfbpr master kiki/feat/SP-829       → generate PR dari master vs branch tertentu
-# gfbpr master -m llama3-8b-8192      → pilih model manual
-
-# Model Kecepatan Kualitas
-# llama-3.3-70b-versatile Sedang⭐⭐⭐⭐⭐ (default kita)
-# llama3-8b-8192 Sangat cepat⭐⭐⭐
-# gemma2-9b-it Cepat⭐⭐⭐
-# qwen-qwq-32b Lambat⭐⭐⭐⭐⭐ (reasoning)
-# mistral-saba-24b Sedang⭐⭐⭐⭐
-
+# gfbpr master                              → groq, current branch vs master
+# gfbpr master kiki/feat/SP-829            → groq, branch spesifik
+# gfbpr master -p gemini                   → pakai Gemini
+# gfbpr master -p groq -m llama3-8b-8192   → groq, pilih model manual
+# gfbpr master -p gemini -m gemini-1.5-pro → gemini, pilih model manual
+#
+# Model Groq gratis:
+# llama-3.3-70b-versatile  → default, kualitas terbaik
+# llama3-8b-8192           → lebih cepat, ringan
+# gemma2-9b-it             → Google Gemma
+# qwen-qwq-32b             → Qwen reasoning
+# mistral-saba-24b         → Mistral
+#
+# Model Gemini gratis:
+# gemini-2.0-flash         → default, cepat & gratis 1500 req/hari
+# gemini-1.5-pro           → lebih powerful
 gfbpr() {
   local base_branch="master"
   local target_branch=$(git rev-parse --abbrev-ref HEAD)
-  local model="llama-3.3-70b-versatile"  # default model gratis groq
+  local provider="groq"  # default provider
+  local model=""         # kosong = pakai default per provider
 
   # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
     case $1 in
+      -p|--provider)
+        provider="$2"
+        shift
+        ;;
       -m|--model)
         model="$2"
         shift
         ;;
       *)
-        if [ "$1" = "$base_branch" ] || [ -z "$base_branch" ]; then
-          base_branch="$1"
-        else
-          target_branch="$1"
+        if [[ "$1" != -* ]] && git rev-parse --verify "$1" &>/dev/null; then
+          if [[ "$1" == "master" || "$1" == "main" || "$1" == "develop" ]]; then
+            base_branch="$1"
+          else
+            target_branch="$1"
+          fi
         fi
         ;;
     esac
     shift
   done
 
-  # Validasi API key
-  if [ -z "$GROQ_API_KEY" ]; then
+  # Set default model per provider
+  if [ -z "$model" ]; then
+    case "$provider" in
+      groq)   model="llama-3.3-70b-versatile" ;;
+      gemini) model="gemini-2.0-flash" ;;
+      *)
+        echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
+        return 1
+        ;;
+    esac
+  fi
+
+  # Validasi API key sesuai provider
+  if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
     echo "❌ GROQ_API_KEY belum di-set."
     echo "Daftar gratis di https://console.groq.com lalu:"
     echo "  export GROQ_API_KEY=\"gsk_xxxxxx\""
+    return 1
+  fi
+  if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
+    echo "❌ GEMINI_API_KEY belum di-set."
+    echo "Daftar gratis di https://aistudio.google.com/apikey lalu:"
+    echo "  export GEMINI_API_KEY=\"AIza_xxxxxx\""
     return 1
   fi
 
@@ -553,9 +585,9 @@ gfbpr() {
   echo "🌿 Target branch : $target_branch"
   echo "📌 Base branch   : $base_branch"
   echo "📋 Total commit  : $commit_count"
-  echo "🤖 Model         : $model"
+  echo "🤖 Provider      : $provider ($model)"
   echo ""
-  echo "⏳ Generating PR dengan Groq..."
+  echo "⏳ Generating PR..."
   echo ""
 
   # Buat prompt
@@ -598,29 +630,26 @@ When I paste a commit list, return only:
 Here are the commits:
 $commits"
 
-  # Kirim ke Groq API — python3 build JSON, curl yang kirim
-  # (urllib diblokir Cloudflare dengan 403, curl lolos)
-  local json_payload
-  json_payload=$(python3 -c "
+  local response result error
+
+  if [ "$provider" = "groq" ]; then
+    # python3 build JSON payload, curl yang kirim (urllib diblokir Cloudflare 403)
+    local json_payload
+    json_payload=$(python3 -c "
 import sys, json
-prompt = sys.argv[1]
-model  = sys.argv[2]
 print(json.dumps({
-    'model': model,
-    'messages': [{'role': 'user', 'content': prompt}],
+    'model': sys.argv[2],
+    'messages': [{'role': 'user', 'content': sys.argv[1]}],
     'temperature': 0.3
 }))
 " "$prompt" "$model" 2>/dev/null)
 
-  local response
-  response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
-    -H "Authorization: Bearer $GROQ_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d "$json_payload")
+    response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+      -H "Authorization: Bearer $GROQ_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$json_payload")
 
-  # Cek error dari API
-  local error
-  error=$(python3 -c "
+    error=$(python3 -c "
 import sys, json
 try:
   d = json.loads(sys.argv[1])
@@ -628,14 +657,7 @@ try:
 except: pass
 " "$response" 2>/dev/null)
 
-  if [ -n "$error" ]; then
-    echo "❌ Groq API error: $error"
-    return 1
-  fi
-
-  # Ekstrak hasil
-  local result
-  result=$(python3 -c "
+    result=$(python3 -c "
 import sys, json
 try:
   d = json.loads(sys.argv[1])
@@ -643,6 +665,44 @@ try:
 except Exception as e:
   print('❌ Parse error:', e)
 " "$response" 2>/dev/null)
+
+  elif [ "$provider" = "gemini" ]; then
+    # Build JSON payload untuk Gemini
+    local json_payload
+    json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'contents': [{'parts': [{'text': sys.argv[1]}]}],
+    'generationConfig': {'temperature': 0.3}
+}))
+" "$prompt" 2>/dev/null)
+
+    response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$json_payload")
+
+    error=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[1])
+  print(d.get('error', {}).get('message', ''))
+except: pass
+" "$response" 2>/dev/null)
+
+    result=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[1])
+  print(d['candidates'][0]['content']['parts'][0]['text'])
+except Exception as e:
+  print('❌ Parse error:', e)
+" "$response" 2>/dev/null)
+  fi
+
+  if [ -n "$error" ]; then
+    echo "❌ API error: $error"
+    return 1
+  fi
 
   echo "$result"
   echo ""
@@ -678,7 +738,6 @@ gfbconflict() {
   local branches=("$@")
   local original_branch=$(git rev-parse --abbrev-ref HEAD)
   local temp_branch="__gfbconflict_temp__"
-  local has_conflict=false
 
   # Pastikan working tree bersih
   if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -793,17 +852,23 @@ gfbmain() {
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbpr — Generate PR title & description via Groq AI"
+  echo "  gfbpr — Generate PR title & description via AI"
   echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbpr [base-branch] [target-branch] [-m model]"
-  echo "  Default : base=master, target=branch aktif, model=llama-3.3-70b-versatile"
-  echo "  Opsi    : -m / --model  → pilih model Groq"
+  echo "  Usage   : gfbpr [base-branch] [target-branch] [-p provider] [-m model]"
+  echo "  Default : base=master, target=branch aktif, provider=groq"
+  echo "  Opsi    : -p / --provider  → groq (default) atau gemini"
+  echo "            -m / --model     → pilih model manual"
   echo "  Contoh  :"
-  echo "    gfbpr master                        → current branch vs master"
-  echo "    gfbpr master kiki/feat/SP-829       → branch spesifik"
-  echo "    gfbpr master -m llama3-8b-8192      → pakai model lain"
-  echo "  Setup   : export GROQ_API_KEY=\"gsk_xxxxxx\" di .zshrc"
+  echo "    gfbpr master                          → groq, current branch"
+  echo "    gfbpr master kiki/feat/SP-829         → groq, branch spesifik"
+  echo "    gfbpr master -p gemini                → pakai Gemini"
+  echo "    gfbpr master -p groq -m llama3-8b-8192"
+  echo "    gfbpr master -p gemini -m gemini-1.5-pro"
+  echo "  Setup   :"
+  echo "    export GROQ_API_KEY=\"gsk_xxxxxx\"      → https://console.groq.com"
+  echo "    export GEMINI_API_KEY=\"AIza_xxxxxx\"   → https://aistudio.google.com/apikey"
   echo ""
+
   echo "──────────────────────────────────────────────────────────────"
   echo "  gfbconflict — Cek conflict antar branch tanpa merge sungguhan"
   echo "──────────────────────────────────────────────────────────────"
@@ -812,6 +877,7 @@ gfbmain() {
   echo "    gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
   echo "    gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march"
   echo ""
+
   echo "──────────────────────────────────────────────────────────────"
   echo "  gfbls — Tampilkan branch yang mengandung keyword tertentu"
   echo "──────────────────────────────────────────────────────────────"
