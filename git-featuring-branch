@@ -1,3 +1,8 @@
+
+#------------------------------------
+# GIT HELPER ALIAS
+#------------------------------------
+
 # command untuk buat branch baru dari master, langsung push, dan set upstream
 # Fungsi GFB (Git Feature Branch) dengan opsi push
 # contoh penggunaan:
@@ -246,4 +251,97 @@ gfblog() {
   done
   echo ""
   echo "Total: $(echo "$commits" | wc -l | tr -d ' ') commit"
+}
+
+# Git Feature Branch Find Commit
+# Mencari commit hash ada di branch mana saja
+# Opsional: -r untuk cek remote branches juga
+#
+# contoh:
+# gfbfind 56c97cde945a078ee1525a20acc9ea0927c5580b
+# gfbfind 56c97cde -r
+# gfbfind 56c97cde -f feature
+gfbfind() {
+  local commit_hash=""
+  local include_remote=false
+  local filter=""
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -r|--remote) include_remote=true ;;
+      -f|--filter)
+        filter="$2"
+        shift
+        ;;
+      *)
+        if [ -z "$commit_hash" ]; then
+          commit_hash="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Validasi input
+  if [ -z "$commit_hash" ]; then
+    echo "❌ Gunakan: gfbfind <commit-hash> [-r] [-f keyword]"
+    echo "Contoh:"
+    echo "  gfbfind 56c97cde"
+    echo "  gfbfind 56c97cde945a078ee1525a20acc9ea0927c5580b -r"
+    echo "  gfbfind 56c97cde -f feature"
+    return 1
+  fi
+
+  # Validasi commit hash exist
+  if ! git cat-file -e "$commit_hash^{commit}" 2>/dev/null; then
+    echo "❌ Commit '$commit_hash' tidak ditemukan di repo ini."
+    return 1
+  fi
+
+  local short_hash=$(git rev-parse --short "$commit_hash")
+  local commit_msg=$(git log -1 --pretty=format:"%s" "$commit_hash")
+
+  echo ""
+  echo "🔍 Mencari commit: $short_hash"
+  echo "📝 Pesan        : $commit_msg"
+  echo ""
+
+  # Tentukan flag: local saja atau termasuk remote
+  local branch_flag=""
+  if [ "$include_remote" = true ]; then
+    echo "🌐 Mode: local + remote branches"
+    branch_flag="-a"  # all: local + remote
+  else
+    echo "💻 Mode: local branches saja (gunakan -r untuk remote)"
+    branch_flag=""    # default: local only
+  fi
+  echo ""
+
+  # Cari branch yang mengandung commit ini
+  local found_branches
+  found_branches=$(git branch $branch_flag --contains "$commit_hash" \
+    | sed 's/^[* ]*//' \
+    | sed 's|^remotes/||')  # rapikan prefix remotes/
+
+  if [ -n "$filter" ]; then
+    found_branches=$(echo "$found_branches" | grep "$filter")
+  fi
+
+  if [ -z "$found_branches" ]; then
+    echo "⚠️  Commit tidak ditemukan di branch manapun."
+    return 0
+  fi
+
+  local count=$(echo "$found_branches" | wc -l | tr -d ' ')
+
+  echo "✅ Ditemukan di $count branch:"
+  echo ""
+  i=1
+  while read -r branch; do
+    [ -z "$branch" ] && continue
+    echo "  [$i] $branch"
+    ((i++))
+  done <<< "$found_branches"
+  echo ""
 }
