@@ -81,90 +81,107 @@ gfb() {
 # [3] bugfix/token
 # Pilih nomor branch (contoh: 1 3 atau 1,3) atau ketik 'all' untuk semua:
 gfbclean() {
-local base_branch=""
-local filter=""
-# parse arg
-while [[ "$#" -gt 0 ]]; do
-case $1 in
--f|--filter)
-filter="$2"
-shift
+  local base_branch=""
+  local filter=""
+
+  # parse arg
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -f|--filter)
+        filter="$2"
+        shift
         ;;
       *)
-base_branch="$1"
+        base_branch="$1"
         ;;
-esac
-shift
-done
-if [ -z "$base_branch" ]; then
-echo "❌ Gunakan: gfbclean <base-branch> [-f keyword]"
-return 1
-fi
-local original_branch=$(git rev-parse --abbrev-ref HEAD)
+    esac
+    shift
+  done
 
-# Tangkap Ctrl+C: balik ke branch semula sebelum exit
-trap "echo ''; echo '🔙 Kembali ke branch: $original_branch'; git checkout \"$original_branch\"; trap - INT; return 1" INT
+  if [ -z "$base_branch" ]; then
+    echo "❌ Gunakan: gfbclean <base-branch> [-f keyword]"
+    return 1
+  fi
 
-echo "🔄 Pulling newest $base_branch..."
-git checkout "$base_branch" && git pull origin "$base_branch" || { trap - INT; return 1; }
-echo "🔍 Mencari branch yang sudah merged ke $base_branch..."
-branches=$(git branch --merged "$base_branch" \
+  local original_branch=$(git rev-parse --abbrev-ref HEAD)
+
+  # Tangkap Ctrl+C: balik ke branch semula sebelum exit
+  trap "echo ''; echo '🔙 Kembali ke branch: $original_branch'; git checkout \"$original_branch\"; trap - INT; return 1" INT
+
+  echo "🔄 Pulling newest $base_branch..."
+  git checkout "$base_branch" && git pull origin "$base_branch" || { trap - INT; return 1; }
+
+  echo "🔍 Mencari branch yang sudah merged ke $base_branch..."
+  local branches
+  branches=$(git branch --merged "$base_branch" \
     | sed 's/^[* ]*//' \
     | grep -vE '^(master|main|develop|staging|production)$')
-if [ -n "$filter" ]; then
-branches=$(echo "$branches" | grep "$filter")
-fi
-if [ -z "$branches" ]; then
-echo "✅ Tidak ada branch yang cocok untuk dibersihkan."
-return 0
-fi
-echo ""
-echo "🗑 Branch yang bisa dihapus:"
-i=1
-declare -a branch_list
-while read -r branch; do
-echo "[$i] $branch"
-branch_list[$i]="$branch"
-    ((i++))
-done <<< "$branches"
-echo ""
-read "selection?Pilih nomor branch (contoh: 1,3 atau 1,3,5) atau ketik 'all' untuk semua: "
-# ubah koma jadi spasi lalu split ke array (zsh-safe)
-local selection_clean=$(echo "$selection" | tr ',' ' ')
-read -A nums <<< "$selection_clean"
 
-selected_branches=()
-if [[ "$selection" == "all" ]]; then
-selected_branches=("${branch_list[@]}")
-else
-for num in "${nums[@]}"; do
-    [[ "$num" =~ ^[0-9]+$ ]] && selected_branches+=("${branch_list[$num]}")
-done
-fi
-echo ""
-echo "Branch yang akan dihapus:"
-for b in "${selected_branches[@]}"; do
+  if [ -n "$filter" ]; then
+    branches=$(echo "$branches" | grep "$filter")
+  fi
+
+  if [ -z "$branches" ]; then
+    echo "✅ Tidak ada branch yang cocok untuk dibersihkan."
+    trap - INT
+    return 0
+  fi
+
+  echo ""
+  echo "🗑 Branch yang bisa dihapus:"
+  local i=1
+  declare -a branch_list
+  while read -r branch; do
+    echo "[$i] $branch"
+    branch_list[$i]="$branch"
+    ((i++))
+  done <<< "$branches"
+
+  echo ""
+  read "selection?Pilih nomor branch (contoh: 1,3 atau 1,3,5) atau ketik 'all' untuk semua: "
+
+  # ubah koma jadi spasi lalu split ke array (zsh-safe)
+  local selection_clean=$(echo "$selection" | tr ',' ' ')
+  local -a nums
+  read -A nums <<< "$selection_clean"
+
+  local -a selected_branches
+  if [[ "$selection" == "all" ]]; then
+    selected_branches=("${branch_list[@]}")
+  else
+    for num in "${nums[@]}"; do
+      [[ "$num" =~ ^[0-9]+$ ]] && selected_branches+=("${branch_list[$num]}")
+    done
+  fi
+
+  echo ""
+  echo "Branch yang akan dihapus:"
+  for b in "${selected_branches[@]}"; do
     [ -z "$b" ] && continue
-echo "- $b"
-done
-echo ""
-read "confirm?Lanjutkan hapus branch di atas? (y/N): "
-if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-echo "❌ Dibatalkan."
-return 0
-fi
-for branch in "${selected_branches[@]}"; do
+    echo "- $b"
+  done
+
+  echo ""
+  read "confirm?Lanjutkan hapus branch di atas? (y/N): "
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo "❌ Dibatalkan."
+    trap - INT
+    return 0
+  fi
+
+  for branch in "${selected_branches[@]}"; do
     [ -z "$branch" ] && continue
-echo "➡️ Hapus local: $branch"
-git branch -d "$branch"
-echo "➡️ Hapus origin: $branch"
-git push origin --delete "$branch"
-done
-echo "✅ Selesai membersihkan branch."
-echo ""
-echo "🔙 Kembali ke branch: $original_branch"
-git checkout "$original_branch"
-trap - INT  # reset trap setelah selesai normal
+    echo "➡️ Hapus local: $branch"
+    git branch -d "$branch"
+    echo "➡️ Hapus origin: $branch"
+    git push origin --delete "$branch"
+  done
+
+  echo "✅ Selesai membersihkan branch."
+  echo ""
+  echo "🔙 Kembali ke branch: $original_branch"
+  git checkout "$original_branch"
+  trap - INT  # reset trap setelah selesai normal
 }
 
 # Git Feature Branch Checker
@@ -178,57 +195,66 @@ trap - INT  # reset trap setelah selesai normal
 # gfbcheck master -f kiki
 #
 # output:
-# 🔍 Branch yang belum merged ke master:
+# 🌿 Branch yang belum merged ke master:
 # [1] feature/login
 # [2] feature/payment
 # [3] bugfix/token
 gfbcheck() {
-local base_branch=""
-local filter=""
-# parse arg
-while [[ "$#" -gt 0 ]]; do
-case $1 in
--f|--filter)
-filter="$2"
-shift
+  local base_branch=""
+  local filter=""
+
+  # parse arg
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -f|--filter)
+        filter="$2"
+        shift
         ;;
       *)
-base_branch="$1"
+        base_branch="$1"
         ;;
-esac
-shift
-done
-if [ -z "$base_branch" ]; then
-echo "❌ Gunakan: gfbcheck <base-branch> [-f keyword]"
-return 1
-fi
-local original_branch=$(git rev-parse --abbrev-ref HEAD)
+    esac
+    shift
+  done
 
-echo "🔄 Pulling newest $base_branch..."
-git checkout "$base_branch" && git pull origin "$base_branch" || return 1
-echo "🔍 Mencari branch yang belum merged ke $base_branch..."
-branches=$(git branch --no-merged "$base_branch" \
+  if [ -z "$base_branch" ]; then
+    echo "❌ Gunakan: gfbcheck <base-branch> [-f keyword]"
+    return 1
+  fi
+
+  local original_branch=$(git rev-parse --abbrev-ref HEAD)
+
+  echo "🔄 Pulling newest $base_branch..."
+  git checkout "$base_branch" && git pull origin "$base_branch" || return 1
+
+  echo "🔍 Mencari branch yang belum merged ke $base_branch..."
+  local branches
+  branches=$(git branch --no-merged "$base_branch" \
     | sed 's/^[* ]*//' \
     | grep -vE '^(master|main|develop|staging|production)$')
-if [ -n "$filter" ]; then
-branches=$(echo "$branches" | grep "$filter")
-fi
-if [ -z "$branches" ]; then
-echo "✅ Semua branch sudah merged ke $base_branch."
-return 0
-fi
-echo ""
-echo "🌿 Branch yang belum merged ke $base_branch:"
-i=1
-while read -r branch; do
-echo "[$i] $branch"
+
+  if [ -n "$filter" ]; then
+    branches=$(echo "$branches" | grep "$filter")
+  fi
+
+  if [ -z "$branches" ]; then
+    echo "✅ Semua branch sudah merged ke $base_branch."
+    return 0
+  fi
+
+  echo ""
+  echo "🌿 Branch yang belum merged ke $base_branch:"
+  local i=1
+  while read -r branch; do
+    echo "[$i] $branch"
     ((i++))
-done <<< "$branches"
-echo ""
-echo "Total: $((i-1)) branch"
-echo ""
-echo "🔙 Kembali ke branch: $original_branch"
-git checkout "$original_branch"
+  done <<< "$branches"
+
+  echo ""
+  echo "Total: $((i-1)) branch"
+  echo ""
+  echo "🔙 Kembali ke branch: $original_branch"
+  git checkout "$original_branch"
 }
 
 # gfblog master                        → compare master vs current branch
@@ -345,7 +371,7 @@ gfbfind() {
 
   echo "✅ Ditemukan di $count branch:"
   echo ""
-  i=1
+  local i=1
   while read -r branch; do
     [ -z "$branch" ] && continue
     echo "  [$i] $branch"
@@ -356,7 +382,7 @@ gfbfind() {
 
 # Git Feature Branch List
 # Menampilkan list branch yang mengandung keyword tertentu
-# Opsional: -r untuk include remote branches
+# Opsional: -r untuk include remote branches juga
 #
 # contoh:
 # gfbls kiki
@@ -378,47 +404,79 @@ gfbls() {
     shift
   done
 
-  # Validasi input
-  if [ -z "$keyword" ]; then
-    echo "❌ Gunakan: gfbls <keyword> [-r]"
-    echo "Contoh:"
-    echo "  gfbls kiki"
-    echo "  gfbls feature -r"
-    return 1
-  fi
+  # Jika tidak ada keyword, tampil semua branch
+  # keyword kosong = grep akan match semua baris
 
-  # Tentukan flag: local saja atau termasuk remote
-  local branch_flag=""
-  if [ "$include_remote" = true ]; then
-    branch_flag="-a"
-  fi
-
-  local branches
-  branches=$(git branch $branch_flag \
+  # Ambil local branches
+  local local_branches
+  local_branches=$(git branch \
     | sed 's/^[* ]*//' \
-    | sed 's|^remotes/||' \
     | grep "$keyword")
 
-  if [ -z "$branches" ]; then
+  # Ambil remote branches (selalu, untuk keperluan cek & mode -r)
+  local remote_branches
+  remote_branches=$(git branch -r \
+    | sed 's/^[* ]*//' \
+    | sed 's/^origin\///' \
+    | grep -v 'HEAD' \
+    | grep "$keyword")
+
+  # Tentukan sumber data sesuai mode
+  local all_branches
+  if [ "$include_remote" = true ]; then
+    all_branches=$(printf "%s\n%s\n" "$local_branches" "$remote_branches" \
+      | grep -v '^$' | sort -u)
+  else
+    all_branches="$local_branches"
+  fi
+
+  if [ -z "$all_branches" ]; then
     echo "⚠️  Tidak ada branch yang mengandung keyword: '$keyword'"
     return 0
   fi
 
-  local count=$(echo "$branches" | wc -l | tr -d ' ')
+  local keyword_label="${keyword:-semua}"
+  local count=$(echo "$all_branches" | grep -c .)
   local mode="local"
   [ "$include_remote" = true ] && mode="local + remote"
 
   echo ""
-  echo "🔍 Keyword  : $keyword"
+  echo "🔍 Keyword  : $keyword_label"
   echo "🌐 Mode     : $mode"
   echo "📋 Ditemukan: $count branch"
   echo ""
-  i=1
+
+  # Fetch dulu supaya info remote fresh
+  echo "🔄 Fetching origin..."
+  git fetch --quiet 2>/dev/null
+
+  local i=1
   while read -r branch; do
     [ -z "$branch" ] && continue
-    echo "  [$i] $branch"
+    local has_local=false
+    local has_remote=false
+    echo "$local_branches"  | grep -qx "$branch" && has_local=true
+    echo "$remote_branches" | grep -qx "$branch" && has_remote=true
+
+    if $has_local && $has_remote; then
+      # Hitung ahead/behind
+      local ahead=$(git rev-list --count "origin/$branch".."$branch" 2>/dev/null)
+      local behind=$(git rev-list --count "$branch".."origin/$branch" 2>/dev/null)
+      local sync_info=""
+      [ "$ahead" -gt 0 ] 2>/dev/null  && sync_info+=" ↑${ahead}"
+      [ "$behind" -gt 0 ] 2>/dev/null && sync_info+=" ↓${behind}"
+      [ -z "$sync_info" ] && sync_info=" ✓"
+      echo "  [$i] $branch$sync_info"
+      echo "       └─ origin/$branch"
+    elif $has_local; then
+      echo "  [$i] $branch  (local only — belum pernah push)"
+    else
+      echo "  [$i] origin/$branch  (remote only — belum di-fetch lokal)"
+    fi
     ((i++))
-  done <<< "$branches"
+  done <<< "$all_branches"
+  echo ""
+  echo "  ↑ = commit lokal belum di-push   ↓ = commit remote belum di-pull   ✓ = sinkron"
   echo ""
 }
 
@@ -483,9 +541,10 @@ gfbmain() {
   echo "  Usage   : gfbls <keyword> [-r]"
   echo "  Opsi    : -r / --remote  → include remote branches"
   echo "  Contoh  :"
-  echo "    gfbls kiki                      → cari branch mengandung 'kiki'"
+  echo "    gfbls kiki                      → cari branch local mengandung 'kiki'"
   echo "    gfbls feature -r                → cari termasuk remote"
   echo ""
+
   echo "──────────────────────────────────────────────────────────────"
   echo "  gfbfind — Cari commit ada di branch mana saja"
   echo "──────────────────────────────────────────────────────────────"
