@@ -1,4 +1,3 @@
-
 #------------------------------------
 # GIT HELPER ALIAS
 #------------------------------------
@@ -796,6 +795,471 @@ gfbconflict() {
   echo ""
 }
 
+# Git Feature Branch Delete
+# Hapus branch di local dan remote sekaligus
+# Aman: tidak bisa hapus branch penting (master, main, develop, staging, production)
+# Bisa pilih branch dari list, atau langsung kasih nama
+#
+# contoh:
+# gfbdel                          → tampilkan semua branch, pilih dari list
+# gfbdel kiki/feat/SP-829         → langsung hapus branch spesifik
+# gfbdel -f feature               → filter list branch sebelum pilih
+# gfbdel -lo kiki/feat/SP-829     → hapus local only
+# gfbdel -ro kiki/feat/SP-829     → hapus remote only
+gfbdel() {
+  local branch_input=""
+  local filter=""
+  local local_only=false
+  local remote_only=false
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -f|--filter)
+        filter="$2"
+        shift
+        ;;
+      -lo|--local-only)  local_only=true ;;
+      -ro|--remote-only) remote_only=true ;;
+      *)
+        if [ -z "$branch_input" ]; then
+          branch_input="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Daftar branch yang dilindungi
+  local protected_pattern='^(master|main|develop|staging|production)$'
+
+  # Jika branch langsung diberikan, skip tampil list
+  if [ -n "$branch_input" ]; then
+    if [[ "$branch_input" =~ $protected_pattern ]]; then
+      echo "🔒 Branch '$branch_input' dilindungi dan tidak bisa dihapus."
+      return 1
+    fi
+    _gfbdel_execute "$branch_input" "$local_only" "$remote_only"
+    return $?
+  fi
+
+  # Tidak ada input → tampilkan list branch untuk dipilih
+  echo "🔄 Fetching origin..."
+  git fetch --quiet 2>/dev/null
+
+  local local_branches
+  local_branches=$(git branch \
+    | sed 's/^[* ]*//' \
+    | grep -vE "$protected_pattern")
+
+  if [ -n "$filter" ]; then
+    local_branches=$(echo "$local_branches" | grep "$filter")
+  fi
+
+  if [ -z "$local_branches" ]; then
+    echo "⚠️  Tidak ada branch yang bisa dihapus."
+    return 0
+  fi
+
+  echo ""
+  echo "🗑 Branch yang tersedia untuk dihapus:"
+  local i=1
+  declare -a branch_list
+  while read -r branch; do
+    [ -z "$branch" ] && continue
+    echo "  [$i] $branch"
+    branch_list[$i]="$branch"
+    ((i++))
+  done <<< "$local_branches"
+
+  echo ""
+  read "selection?Pilih nomor branch yang ingin dihapus: "
+
+  if [ -z "$selection" ]; then
+    echo "❌ Tidak ada yang dipilih. Dibatalkan."
+    return 0
+  fi
+
+  local selected_branch="${branch_list[$selection]}"
+
+  if [ -z "$selected_branch" ]; then
+    echo "❌ Nomor tidak valid."
+    return 1
+  fi
+
+  _gfbdel_execute "$selected_branch" "$local_only" "$remote_only"
+}
+
+# Helper internal untuk gfbdel: eksekusi hapus branch local dan/atau remote
+_gfbdel_execute() {
+  local branch="$1"
+  local local_only="$2"
+  local remote_only="$3"
+  local current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+  # Cek apakah sedang di branch yang mau dihapus
+  if [ "$current_branch" = "$branch" ]; then
+    echo "⚠️  Kamu sedang berada di branch '$branch'."
+    echo "Pindah dulu ke branch lain sebelum menghapus."
+    return 1
+  fi
+
+  # Cek eksistensi di local dan remote
+  local has_local=false
+  local has_remote=false
+  git show-ref --verify --quiet "refs/heads/$branch"          && has_local=true
+  git show-ref --verify --quiet "refs/remotes/origin/$branch" && has_remote=true
+
+  if ! $has_local && ! $has_remote; then
+    echo "❌ Branch '$branch' tidak ditemukan (local maupun remote)."
+    return 1
+  fi
+
+  echo ""
+  echo "🗑 Branch yang akan dihapus: $branch"
+  $has_local  && ! $remote_only && echo "  └─ local  : ✓"
+  $has_remote && ! $local_only  && echo "  └─ remote : ✓"
+  echo ""
+
+  read "confirm?Lanjutkan hapus? (y/N): "
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo "❌ Dibatalkan."
+    return 0
+  fi
+
+  # Hapus local
+  if $has_local && ! $remote_only; then
+    echo "➡️  Hapus local: $branch"
+    git branch -d "$branch" 2>/dev/null || git branch -D "$branch"
+  fi
+
+  # Hapus remote
+  if $has_remote && ! $local_only; then
+    echo "➡️  Hapus remote: origin/$branch"
+    git push origin --delete "$branch"
+  fi
+
+  echo "✅ Branch '$branch' berhasil dihapus."
+}
+
+# Git Feature Branch Range
+# Menampilkan list commit dan file yang berubah di antara dua commit hash
+# Mendukung short hash maupun full hash
+#
+# contoh:
+# gfbrange abc1234 def5678
+# gfbrange abc1234 def5678 -f src/services
+gfbrange() {
+  local hash1=""
+  local hash2=""
+  local filter=""
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -f|--filter)
+        filter="$2"
+        shift
+        ;;
+      *)
+        if [ -z "$hash1" ]; then
+          hash1="$1"
+        elif [ -z "$hash2" ]; then
+          hash2="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Validasi input
+  if [ -z "$hash1" ] || [ -z "$hash2" ]; then
+    echo "❌ Gunakan: gfbrange <hash1> <hash2> [-f keyword]"
+    echo "Contoh:"
+    echo "  gfbrange abc1234 def5678"
+    echo "  gfbrange abc1234 def5678 -f src/services"
+    return 1
+  fi
+
+  # Validasi kedua commit hash exist
+  if ! git cat-file -e "$hash1^{commit}" 2>/dev/null; then
+    echo "❌ Commit '$hash1' tidak ditemukan di repo ini."
+    return 1
+  fi
+  if ! git cat-file -e "$hash2^{commit}" 2>/dev/null; then
+    echo "❌ Commit '$hash2' tidak ditemukan di repo ini."
+    return 1
+  fi
+
+  local short1=$(git rev-parse --short "$hash1")
+  local short2=$(git rev-parse --short "$hash2")
+
+  # Ambil list commit antara hash1..hash2
+  local commits
+  commits=$(git log "$hash1".."$hash2" --oneline --no-decorate 2>/dev/null)
+
+  echo ""
+  echo "🔗 Range   : $short1 → $short2"
+
+  if [ -z "$commits" ]; then
+    # Coba balik urutan, mungkin hash1 lebih baru dari hash2
+    commits=$(git log "$hash2".."$hash1" --oneline --no-decorate 2>/dev/null)
+    if [ -n "$commits" ]; then
+      echo "⚠️  Urutan dibalik: $short2 → $short1"
+      # Tukar supaya diff file juga konsisten
+      local tmp="$hash1"; hash1="$hash2"; hash2="$tmp"
+      short1=$(git rev-parse --short "$hash1")
+      short2=$(git rev-parse --short "$hash2")
+    else
+      echo "✅ Tidak ada commit di antara kedua hash tersebut."
+      return 0
+    fi
+  fi
+
+  local commit_count=$(echo "$commits" | wc -l | tr -d ' ')
+
+  # ── Tampilkan commit list ──────────────────────────────────────
+  echo ""
+  echo "📋 Commits ($commit_count):"
+  local i=1
+  while read -r line; do
+    echo "  [$i] $line"
+    ((i++))
+  done <<< "$commits"
+
+  # ── Tampilkan file yang berubah ────────────────────────────────
+  # --diff-filter: M=Modified A=Added D=Deleted R=Renamed C=Copied
+  local changed_files
+  changed_files=$(git diff --name-status "$hash1" "$hash2" 2>/dev/null)
+
+  if [ -n "$filter" ]; then
+    changed_files=$(echo "$changed_files" | grep "$filter")
+  fi
+
+  if [ -z "$changed_files" ]; then
+    echo ""
+    echo "📂 Tidak ada file yang berubah."
+    return 0
+  fi
+
+  # Hitung per status
+  local count_m=$(echo "$changed_files" | grep -c '^M' || true)
+  local count_a=$(echo "$changed_files" | grep -c '^A' || true)
+  local count_d=$(echo "$changed_files" | grep -c '^D' || true)
+  local count_r=$(echo "$changed_files" | grep -c '^R' || true)
+  local count_c=$(echo "$changed_files" | grep -c '^C' || true)
+  local total_files=$(echo "$changed_files" | grep -c '.' || true)
+
+  echo ""
+  echo "📂 Files changed ($total_files):"
+
+  # fstatus menggantikan status (reserved variable di zsh)
+  while IFS=$'\t' read -r fstatus filepath rest; do
+    [ -z "$fstatus" ] && continue
+    case "${fstatus:0:1}" in
+      M) echo "  \033[33m[M]\033[0m  $filepath" ;;  # Modified  → kuning
+      A) echo "  \033[32m[A]\033[0m  $filepath" ;;  # Added     → hijau
+      D) echo "  \033[31m[D]\033[0m  $filepath" ;;  # Deleted   → merah
+      R) echo "  \033[34m[R]\033[0m  $filepath → $rest" ;;  # Renamed → biru
+      C) echo "  \033[36m[C]\033[0m  $filepath → $rest" ;;  # Copied  → cyan
+      *) echo "  [?]  $filepath" ;;
+    esac
+  done <<< "$changed_files"
+
+  # Summary
+  echo ""
+  echo "──────────────────────────────────────────────────────"
+  printf "  Total: %-4s" "$total_files"
+  [ "$count_m" -gt 0 ] && printf "  \033[33mM:%-3s\033[0m" "$count_m"
+  [ "$count_a" -gt 0 ] && printf "  \033[32mA:%-3s\033[0m" "$count_a"
+  [ "$count_d" -gt 0 ] && printf "  \033[31mD:%-3s\033[0m" "$count_d"
+  [ "$count_r" -gt 0 ] && printf "  \033[34mR:%-3s\033[0m" "$count_r"
+  [ "$count_c" -gt 0 ] && printf "  \033[36mC:%-3s\033[0m" "$count_c"
+  echo ""
+  echo "──────────────────────────────────────────────────────"
+  echo ""
+}
+
+# Git Feature Branch Compare
+# Membandingkan dua branch secara menyeluruh:
+# - Common ancestor (titik diverge)
+# - Ahead/behind count di kedua arah
+# - Commit yang ada di branch A tapi tidak di branch B (dan sebaliknya)
+# - File yang berbeda antara kedua branch
+#
+# contoh:
+# gfbcompare master feature/login
+# gfbcompare master feature/login -f src/services
+# gfbcompare develop kiki/feat/SP-829
+gfbcompare() {
+  local branch_a=""
+  local branch_b=""
+  local filter=""
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -f|--filter)
+        filter="$2"
+        shift
+        ;;
+      *)
+        if [ -z "$branch_a" ]; then
+          branch_a="$1"
+        elif [ -z "$branch_b" ]; then
+          branch_b="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Validasi input
+  if [ -z "$branch_a" ] || [ -z "$branch_b" ]; then
+    echo "❌ Gunakan: gfbcompare <branch-a> <branch-b> [-f keyword]"
+    echo "Contoh:"
+    echo "  gfbcompare master feature/login"
+    echo "  gfbcompare develop kiki/feat/SP-829 -f src/services"
+    return 1
+  fi
+
+  # Validasi kedua branch exist
+  if ! git rev-parse --verify "$branch_a" &>/dev/null; then
+    echo "❌ Branch '$branch_a' tidak ditemukan."
+    return 1
+  fi
+  if ! git rev-parse --verify "$branch_b" &>/dev/null; then
+    echo "❌ Branch '$branch_b' tidak ditemukan."
+    return 1
+  fi
+
+  # ── Header ────────────────────────────────────────────────────
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════╗"
+  echo "║               🔀 Branch Comparison                          ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+  echo ""
+  echo "  🅐  $branch_a"
+  echo "  🅑  $branch_b"
+  echo ""
+
+  # ── Common ancestor ───────────────────────────────────────────
+  local merge_base
+  merge_base=$(git merge-base "$branch_a" "$branch_b" 2>/dev/null)
+
+  if [ -n "$merge_base" ]; then
+    local base_short=$(git rev-parse --short "$merge_base")
+    local base_msg=$(git log -1 --pretty=format:"%s" "$merge_base")
+    local base_date=$(git log -1 --pretty=format:"%cd" --date=format:"%Y-%m-%d" "$merge_base")
+    echo "──────────────────────────────────────────────────────"
+    echo "  🌱 Common Ancestor"
+    echo "──────────────────────────────────────────────────────"
+    echo "  Hash : $base_short"
+    echo "  Pesan: $base_msg"
+    echo "  Tanggal: $base_date"
+    echo ""
+  fi
+
+  # ── Ahead / Behind ────────────────────────────────────────────
+  local ahead_a=$(git rev-list --count "$branch_b".."$branch_a" 2>/dev/null)
+  local ahead_b=$(git rev-list --count "$branch_a".."$branch_b" 2>/dev/null)
+
+  echo "──────────────────────────────────────────────────────"
+  echo "  📊 Ahead / Behind"
+  echo "──────────────────────────────────────────────────────"
+  echo "  🅐  $branch_a : \033[32m↑ $ahead_a commit\033[0m di depan 🅑"
+  echo "  🅑  $branch_b : \033[33m↑ $ahead_b commit\033[0m di depan 🅐"
+  echo ""
+
+  # ── Commit eksklusif di A (tidak ada di B) ────────────────────
+  local commits_only_a
+  commits_only_a=$(git log "$branch_b".."$branch_a" --oneline --no-decorate 2>/dev/null)
+
+  echo "──────────────────────────────────────────────────────"
+  echo "  📋 Commit hanya di 🅐  $branch_a  ($ahead_a)"
+  echo "──────────────────────────────────────────────────────"
+  if [ -z "$commits_only_a" ]; then
+    echo "  (tidak ada)"
+  else
+    local i=1
+    while read -r line; do
+      echo "  [$i] $line"
+      ((i++))
+    done <<< "$commits_only_a"
+  fi
+  echo ""
+
+  # ── Commit eksklusif di B (tidak ada di A) ────────────────────
+  local commits_only_b
+  commits_only_b=$(git log "$branch_a".."$branch_b" --oneline --no-decorate 2>/dev/null)
+
+  echo "──────────────────────────────────────────────────────"
+  echo "  📋 Commit hanya di 🅑  $branch_b  ($ahead_b)"
+  echo "──────────────────────────────────────────────────────"
+  if [ -z "$commits_only_b" ]; then
+    echo "  (tidak ada)"
+  else
+    local i=1
+    while read -r line; do
+      echo "  [$i] $line"
+      ((i++))
+    done <<< "$commits_only_b"
+  fi
+  echo ""
+
+  # ── File yang berbeda antara kedua branch ─────────────────────
+  local changed_files
+  changed_files=$(git diff --name-status "$branch_a".."$branch_b" 2>/dev/null)
+
+  if [ -n "$filter" ]; then
+    changed_files=$(echo "$changed_files" | grep "$filter")
+  fi
+
+  echo "──────────────────────────────────────────────────────"
+  echo "  📂 Files changed 🅐 → 🅑"
+  echo "──────────────────────────────────────────────────────"
+
+  if [ -z "$changed_files" ]; then
+    echo "  (tidak ada perbedaan file)"
+    echo ""
+    return 0
+  fi
+
+  # Hitung per status
+  local count_m=$(echo "$changed_files" | grep -c '^M' || true)
+  local count_a=$(echo "$changed_files" | grep -c '^A' || true)
+  local count_d=$(echo "$changed_files" | grep -c '^D' || true)
+  local count_r=$(echo "$changed_files" | grep -c '^R' || true)
+  local count_c=$(echo "$changed_files" | grep -c '^C' || true)
+  local total_files=$(echo "$changed_files" | grep -c '.' || true)
+
+  # fstatus menggantikan status (reserved variable di zsh)
+  while IFS=$'\t' read -r fstatus filepath rest; do
+    [ -z "$fstatus" ] && continue
+    case "${fstatus:0:1}" in
+      M) echo "  \033[33m[M]\033[0m  $filepath" ;;  # Modified  → kuning
+      A) echo "  \033[32m[A]\033[0m  $filepath" ;;  # Added     → hijau
+      D) echo "  \033[31m[D]\033[0m  $filepath" ;;  # Deleted   → merah
+      R) echo "  \033[34m[R]\033[0m  $filepath → $rest" ;;  # Renamed → biru
+      C) echo "  \033[36m[C]\033[0m  $filepath → $rest" ;;  # Copied  → cyan
+      *) echo "  [?]  $filepath" ;;
+    esac
+  done <<< "$changed_files"
+
+  # ── Summary ───────────────────────────────────────────────────
+  echo ""
+  echo "══════════════════════════════════════════════════════"
+  printf "  Total file: %-4s" "$total_files"
+  [ "$count_m" -gt 0 ] && printf "  \033[33mM:%-3s\033[0m" "$count_m"
+  [ "$count_a" -gt 0 ] && printf "  \033[32mA:%-3s\033[0m" "$count_a"
+  [ "$count_d" -gt 0 ] && printf "  \033[31mD:%-3s\033[0m" "$count_d"
+  [ "$count_r" -gt 0 ] && printf "  \033[34mR:%-3s\033[0m" "$count_r"
+  [ "$count_c" -gt 0 ] && printf "  \033[36mC:%-3s\033[0m" "$count_c"
+  echo ""
+  echo "══════════════════════════════════════════════════════"
+  echo ""
+}
+
 # GFB Main — menampilkan daftar semua perintah GFB beserta usage-nya
 # Gunakan: gfbmain --help
 gfbmain() {
@@ -876,6 +1340,47 @@ gfbmain() {
   echo "  Contoh  :"
   echo "    gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
   echo "    gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbdel — Hapus branch di local dan remote sekaligus"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbdel [branch-name] [-f keyword] [-lo] [-ro]"
+  echo "  Opsi    : -f  / --filter       → filter list branch sebelum pilih"
+  echo "            -lo / --local-only   → hapus local saja"
+  echo "            -ro / --remote-only  → hapus remote saja"
+  echo "  Proteksi: master, main, develop, staging, production tidak bisa dihapus"
+  echo "  Contoh  :"
+  echo "    gfbdel                          → tampilkan list, pilih branch"
+  echo "    gfbdel kiki/feat/SP-829         → langsung hapus branch spesifik"
+  echo "    gfbdel -f feature               → filter list sebelum pilih"
+  echo "    gfbdel -lo kiki/feat/SP-829     → hapus local only"
+  echo "    gfbdel -ro kiki/feat/SP-829     → hapus remote only"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbrange — Tampilkan commit & file berubah antar dua hash"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbrange <hash1> <hash2> [-f keyword]"
+  echo "  Opsi    : -f / --filter  → filter path file"
+  echo "  Contoh  :"
+  echo "    gfbrange abc1234 def5678             → semua file"
+  echo "    gfbrange abc1234 def5678 -f services → filter path 'services'"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbcompare — Bandingkan dua branch secara menyeluruh"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbcompare <branch-a> <branch-b> [-f keyword]"
+  echo "  Opsi    : -f / --filter  → filter path file"
+  echo "  Tampilkan:"
+  echo "    - Common ancestor (titik diverge)"
+  echo "    - Ahead/behind count di kedua arah"
+  echo "    - Commit eksklusif di masing-masing branch"
+  echo "    - File yang berbeda antara kedua branch"
+  echo "  Contoh  :"
+  echo "    gfbcompare master feature/login"
+  echo "    gfbcompare develop kiki/feat/SP-829 -f src/services"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
