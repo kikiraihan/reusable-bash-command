@@ -34,6 +34,9 @@ gfb() {
     shift
   done
 
+  # "." berarti merefer ke branch aktif saat ini
+  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
+
   # Validasi input
   if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
     echo "❌ Gunakan: gfb [-p] <base-branch> <nama-branch-baru>"
@@ -103,6 +106,9 @@ gfbclean() {
     esac
     shift
   done
+
+  # "." berarti merefer ke branch aktif saat ini
+  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
 
   if [ -z "$base_branch" ]; then
     echo "❌ Gunakan: gfbclean <base-branch> [-f keyword]"
@@ -223,6 +229,9 @@ gfbcheck() {
     shift
   done
 
+  # "." berarti merefer ke branch aktif saat ini
+  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
+
   if [ -z "$base_branch" ]; then
     echo "❌ Gunakan: gfbcheck <base-branch> [-f keyword]"
     return 1
@@ -268,6 +277,10 @@ gfbcheck() {
 gfblog() {
   local base_branch="${1:-master}"
   local target_branch="${2:-$(git rev-parse --abbrev-ref HEAD)}"
+
+  # "." berarti merefer ke branch aktif saat ini
+  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
+  [ "$target_branch" = "." ] && target_branch=$(git rev-parse --abbrev-ref HEAD)
 
   if [ "$target_branch" = "$base_branch" ]; then
     echo "⚠️  Target branch sama dengan base branch ($base_branch)."
@@ -525,11 +538,14 @@ gfbpr() {
         shift
         ;;
       *)
-        if [[ "$1" != -* ]] && git rev-parse --verify "$1" &>/dev/null; then
-          if [[ "$1" == "master" || "$1" == "main" || "$1" == "develop" ]]; then
-            base_branch="$1"
+        # "." berarti merefer ke branch aktif saat ini
+        local arg="$1"
+        [ "$arg" = "." ] && arg=$(git rev-parse --abbrev-ref HEAD)
+        if [[ "$arg" != -* ]] && git rev-parse --verify "$arg" &>/dev/null; then
+          if [[ "$arg" == "master" || "$arg" == "main" || "$arg" == "develop" ]]; then
+            base_branch="$arg"
           else
-            target_branch="$1"
+            target_branch="$arg"
           fi
         fi
         ;;
@@ -735,6 +751,14 @@ gfbconflict() {
   local base_branch="$1"
   shift
   local branches=("$@")
+
+  # "." berarti merefer ke branch aktif saat ini (base maupun salah satu target)
+  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
+  local i
+  for i in {1..${#branches[@]}}; do
+    [[ "${branches[i]}" == "." ]] && branches[i]=$(git rev-parse --abbrev-ref HEAD)
+  done
+
   local original_branch=$(git rev-parse --abbrev-ref HEAD)
   local temp_branch="__gfbconflict_temp__"
 
@@ -829,6 +853,9 @@ gfbdel() {
     esac
     shift
   done
+
+  # "." berarti merefer ke branch aktif saat ini
+  [ "$branch_input" = "." ] && branch_input=$(git rev-parse --abbrev-ref HEAD)
 
   # Daftar branch yang dilindungi
   local protected_pattern='^(master|main|develop|staging|production)$'
@@ -1114,6 +1141,10 @@ gfbcompare() {
     shift
   done
 
+  # "." berarti merefer ke branch aktif saat ini
+  [ "$branch_a" = "." ] && branch_a=$(git rev-parse --abbrev-ref HEAD)
+  [ "$branch_b" = "." ] && branch_b=$(git rev-parse --abbrev-ref HEAD)
+
   # Validasi input
   if [ -z "$branch_a" ] || [ -z "$branch_b" ]; then
     echo "❌ Gunakan: gfbcompare <branch-a> <branch-b> [-f keyword]"
@@ -1282,6 +1313,7 @@ gfbmain() {
   echo "  Contoh  :"
   echo "    gfb master fitur-login          → buat branch lokal"
   echo "    gfb -p develop fitur-payment    → buat + push ke origin"
+  echo "  Tips    : base-branch bisa diisi '.' untuk pakai branch aktif saat ini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1293,6 +1325,7 @@ gfbmain() {
   echo "    gfbclean master                 → lihat & hapus branch merged"
   echo "    gfbclean master -f feature      → filter branch mengandung 'feature'"
   echo "  Input   : nomor (1,3,5), spasi (1 3 5), atau 'all'"
+  echo "  Tips    : base-branch bisa diisi '.' untuk pakai branch aktif saat ini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1303,6 +1336,7 @@ gfbmain() {
   echo "  Contoh  :"
   echo "    gfbcheck master                 → tampilkan branch belum merged"
   echo "    gfbcheck develop -f bugfix      → filter branch mengandung 'bugfix'"
+  echo "  Tips    : base-branch bisa diisi '.' untuk pakai branch aktif saat ini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1313,6 +1347,7 @@ gfbmain() {
   echo "  Contoh  :"
   echo "    gfblog master                   → compare master vs current branch"
   echo "    gfblog master feature/login     → compare master vs feature/login"
+  echo "  Tips    : base-branch / target-branch bisa diisi '.' untuk branch aktif saat ini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1328,6 +1363,7 @@ gfbmain() {
   echo "    gfbpr master -p gemini                → pakai Gemini"
   echo "    gfbpr master -p groq -m llama3-8b-8192"
   echo "    gfbpr master -p gemini -m gemini-1.5-pro"
+  echo "  Tips    : base-branch / target-branch bisa diisi '.' untuk branch aktif saat ini"
   echo "  Setup   :"
   echo "    export GROQ_API_KEY=\"gsk_xxxxxx\"      → https://console.groq.com"
   echo "    export GEMINI_API_KEY=\"AIza_xxxxxx\"   → https://aistudio.google.com/apikey"
@@ -1340,6 +1376,7 @@ gfbmain() {
   echo "  Contoh  :"
   echo "    gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
   echo "    gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march"
+  echo "  Tips    : base-branch atau branch mana pun bisa diisi '.' untuk branch aktif saat ini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1356,6 +1393,7 @@ gfbmain() {
   echo "    gfbdel -f feature               → filter list sebelum pilih"
   echo "    gfbdel -lo kiki/feat/SP-829     → hapus local only"
   echo "    gfbdel -ro kiki/feat/SP-829     → hapus remote only"
+  echo "  Tips    : branch-name bisa diisi '.' (akan ditolak karena tidak bisa hapus branch aktif)"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1381,6 +1419,7 @@ gfbmain() {
   echo "  Contoh  :"
   echo "    gfbcompare master feature/login"
   echo "    gfbcompare develop kiki/feat/SP-829 -f src/services"
+  echo "  Tips    : branch-a / branch-b bisa diisi '.' untuk branch aktif saat ini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
@@ -1411,3 +1450,6 @@ gfbmain() {
   echo "  Usage   : gfbmain --help"
   echo ""
 }
+
+# Added by Antigravity CLI installer
+export PATH="/Users/mohzulkiflikatili/.local/bin:$PATH"
