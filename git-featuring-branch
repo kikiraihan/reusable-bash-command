@@ -730,6 +730,181 @@ except Exception as e:
   fi
 }
 
+# Git Feature Branch Lark Link
+# Generate link Lark PRD/Story berdasarkan ID yang terkandung di nama branch
+# ID biasanya berupa angka yang menempel di nama branch, misal:
+# kiki/feat/split-payment-23729368
+#
+# Base URL Lark diatur lewat variable LARK_PRD_BASE_URL di dalam function ini,
+# jadi kalau formatnya berubah tinggal ubah 1 baris itu saja.
+#
+# Deteksi ID pakai AI (Groq/Gemini), sama seperti gfbpr.
+# Kalau API key belum di-set atau AI tidak menemukan angka, akan fallback ke
+# regex sederhana (ambil angka dari nama branch). Kalau tetap tidak ketemu,
+# user akan diminta input ID secara manual.
+#
+# contoh:
+# gfblarklink                                  → deteksi ID dari branch aktif
+# gfblarklink kiki/feat/split-payment-23729368 → deteksi ID dari branch tertentu
+# gfblarklink -i 23687966                      → langsung pakai ID manual
+# gfblarklink . -p gemini                      → pakai Gemini untuk deteksi
+gfblarklink() {
+  # Base URL Lark PRD, ubah di sini kalau formatnya berubah
+  local LARK_PRD_BASE_URL="https://project.larksuite.com/spd/story/detail/"
+
+  local branch_name=""
+  local manual_id=""
+  local provider="groq"  # default provider
+  local model=""         # kosong = pakai default per provider
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -i|--id)
+        manual_id="$2"
+        shift
+        ;;
+      -p|--provider)
+        provider="$2"
+        shift
+        ;;
+      -m|--model)
+        model="$2"
+        shift
+        ;;
+      *)
+        if [ -z "$branch_name" ]; then
+          branch_name="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  # Default branch = branch aktif saat ini, "." juga berarti branch aktif
+  [ -z "$branch_name" ] && branch_name=$(git rev-parse --abbrev-ref HEAD)
+  [ "$branch_name" = "." ] && branch_name=$(git rev-parse --abbrev-ref HEAD)
+
+  local prd_id="$manual_id"
+
+  # Kalau user sudah kasih ID manual lewat -i, skip semua deteksi
+  if [ -z "$prd_id" ]; then
+    echo "🔍 Mencari ID PRD di nama branch: $branch_name"
+
+    # Set default model per provider
+    if [ -z "$model" ]; then
+      case "$provider" in
+        groq)   model="llama-3.3-70b-versatile" ;;
+        gemini) model="gemini-2.0-flash" ;;
+        *)
+          echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
+          return 1
+          ;;
+      esac
+    fi
+
+    # Cek API key sesuai provider, kalau belum di-set langsung fallback ke regex
+    local has_api_key=true
+    if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
+      has_api_key=false
+    fi
+    if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
+      has_api_key=false
+    fi
+
+    if [ "$has_api_key" = true ]; then
+      local prompt="Extract the numeric PRD/story ID from this git branch name. The ID is usually a sequence of digits (5 digits or more) embedded somewhere in the branch name. Return ONLY the number, nothing else, no explanation, no punctuation. If there is no clear numeric ID, return exactly: NONE
+Branch name: $branch_name"
+
+      local response result
+
+      if [ "$provider" = "groq" ]; then
+        local json_payload
+        json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'model': sys.argv[2],
+    'messages': [{'role': 'user', 'content': sys.argv[1]}],
+    'temperature': 0
+}))
+" "$prompt" "$model" 2>/dev/null)
+
+        response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+          -H "Authorization: Bearer $GROQ_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "$json_payload")
+
+        result=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[1])
+  print(d['choices'][0]['message']['content'].strip())
+except Exception:
+  print('NONE')
+" "$response" 2>/dev/null)
+
+      elif [ "$provider" = "gemini" ]; then
+        local json_payload
+        json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'contents': [{'parts': [{'text': sys.argv[1]}]}],
+    'generationConfig': {'temperature': 0}
+}))
+" "$prompt" 2>/dev/null)
+
+        response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "$json_payload")
+
+        result=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[1])
+  print(d['candidates'][0]['content']['parts'][0]['text'].strip())
+except Exception:
+  print('NONE')
+" "$response" 2>/dev/null)
+      fi
+
+      # Bersihkan hasil, ambil digit saja kalau AI kasih tambahan teks
+      result=$(echo "$result" | grep -oE '[0-9]+' | head -1)
+      [ -n "$result" ] && prd_id="$result"
+    else
+      echo "ℹ️  API key untuk provider '$provider' belum di-set, fallback ke deteksi angka dari nama branch."
+    fi
+
+    # Fallback: kalau AI tidak tersedia / tidak ketemu, coba regex sederhana
+    if [ -z "$prd_id" ]; then
+      prd_id=$(echo "$branch_name" | grep -oE '[0-9]+' | tail -1)
+    fi
+  fi
+
+  # Kalau masih belum ketemu, minta input manual
+  if [ -z "$prd_id" ]; then
+    echo "⚠️  ID PRD tidak ditemukan otomatis di nama branch."
+    read "prd_id?Masukkan ID PRD manual: "
+  fi
+
+  if [ -z "$prd_id" ] || ! [[ "$prd_id" =~ ^[0-9]+$ ]]; then
+    echo "❌ ID PRD tidak valid."
+    return 1
+  fi
+
+  local link="${LARK_PRD_BASE_URL}${prd_id}"
+
+  echo ""
+  echo "🔗 Lark PRD Link:"
+  echo "$link"
+  echo ""
+
+  read "copy?📋 Copy ke clipboard? (y/N): "
+  if [[ "$copy" == "y" || "$copy" == "Y" ]]; then
+    echo "$link" | pbcopy
+    echo "✅ Sudah di-copy ke clipboard!"
+  fi
+}
+
 # Git Feature Branch Conflict Checker
 # Cek apakah ada conflict antar branch tanpa benar-benar merge
 #
@@ -1367,6 +1542,22 @@ gfbmain() {
   echo "  Setup   :"
   echo "    export GROQ_API_KEY=\"gsk_xxxxxx\"      → https://console.groq.com"
   echo "    export GEMINI_API_KEY=\"AIza_xxxxxx\"   → https://aistudio.google.com/apikey"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfblarklink — Generate link Lark PRD/Story dari nama branch"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfblarklink [branch-name] [-i id] [-p provider] [-m model]"
+  echo "  Default : branch=branch aktif, provider=groq"
+  echo "  Opsi    : -i / --id        → langsung pakai ID manual, skip deteksi"
+  echo "            -p / --provider  → groq (default) atau gemini, untuk deteksi ID"
+  echo "            -m / --model     → pilih model manual"
+  echo "  Contoh  :"
+  echo "    gfblarklink                                  → deteksi ID dari branch aktif"
+  echo "    gfblarklink kiki/feat/split-payment-23729368 → deteksi ID dari branch tertentu"
+  echo "    gfblarklink -i 23687966                      → langsung pakai ID manual"
+  echo "    gfblarklink . -p gemini                      → pakai Gemini untuk deteksi"
+  echo "  Tips    : kalau ID tidak ditemukan otomatis, akan diminta input manual"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
