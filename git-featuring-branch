@@ -731,12 +731,16 @@ except Exception as e:
 }
 
 # Git Feature Branch Lark Link
-# Generate link Lark PRD/Story berdasarkan ID yang terkandung di nama branch
+# Generate link Lark (Story & Issue) berdasarkan ID yang terkandung di nama branch
 # ID biasanya berupa angka yang menempel di nama branch, misal:
 # kiki/feat/split-payment-23729368
 #
-# Base URL Lark diatur lewat variable LARK_PRD_BASE_URL di dalam function ini,
-# jadi kalau formatnya berubah tinggal ubah 1 baris itu saja.
+# Karena satu ID bisa jadi Story (feat) atau Issue (fix), function ini akan
+# selalu menampilkan KEDUA kemungkinan link, diurutkan mana yang lebih mungkin
+# berdasarkan nama branch (mengandung "fix" → Issue duluan, selain itu → Story duluan).
+#
+# Base URL Lark diatur lewat variable LARK_STORY_BASE_URL & LARK_ISSUE_BASE_URL
+# di dalam function ini, jadi kalau formatnya berubah tinggal ubah di sini saja.
 #
 # Deteksi ID pakai AI (Groq/Gemini), sama seperti gfbpr.
 # Kalau API key belum di-set atau AI tidak menemukan angka, akan fallback ke
@@ -749,8 +753,9 @@ except Exception as e:
 # gfblarklink -i 23687966                      → langsung pakai ID manual
 # gfblarklink . -p gemini                      → pakai Gemini untuk deteksi
 gfblarklink() {
-  # Base URL Lark PRD, ubah di sini kalau formatnya berubah
-  local LARK_PRD_BASE_URL="https://project.larksuite.com/spd/story/detail/"
+  # Base URL Lark, ubah di sini kalau formatnya berubah
+  local LARK_STORY_BASE_URL="https://project.larksuite.com/spd/story/detail/"
+  local LARK_ISSUE_BASE_URL="https://project.larksuite.com/spd/issue/detail/"
 
   local branch_name=""
   local manual_id=""
@@ -891,16 +896,34 @@ except Exception:
     return 1
   fi
 
-  local link="${LARK_PRD_BASE_URL}${prd_id}"
+  local story_link="${LARK_STORY_BASE_URL}${prd_id}"
+  local issue_link="${LARK_ISSUE_BASE_URL}${prd_id}"
+
+  # Tebak tipe ticket paling mungkin dari nama branch: "fix" → Issue duluan, selain itu → Story duluan
+  local first_label="Story (feat)"
+  local first_link="$story_link"
+  local second_label="Issue (fix)"
+  local second_link="$issue_link"
+
+  if [[ "$branch_name" == *fix* ]]; then
+    first_label="Issue (fix)"
+    first_link="$issue_link"
+    second_label="Story (feat)"
+    second_link="$story_link"
+  fi
 
   echo ""
-  echo "🔗 Lark PRD Link:"
-  echo "$link"
+  echo "🔗 Lark Link (paling mungkin duluan):"
+  echo "  [1] $first_label  → $first_link"
+  echo "  [2] $second_label → $second_link"
   echo ""
 
-  read "copy?📋 Copy ke clipboard? (y/N): "
-  if [[ "$copy" == "y" || "$copy" == "Y" ]]; then
-    echo "$link" | pbcopy
+  read "copy?📋 Copy link mana ke clipboard? (1/2/N): "
+  if [[ "$copy" == "1" ]]; then
+    echo "$first_link" | pbcopy
+    echo "✅ Sudah di-copy ke clipboard!"
+  elif [[ "$copy" == "2" ]]; then
+    echo "$second_link" | pbcopy
     echo "✅ Sudah di-copy ke clipboard!"
   fi
 }
@@ -1545,7 +1568,7 @@ gfbmain() {
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
-  echo "  gfblarklink — Generate link Lark PRD/Story dari nama branch"
+  echo "  gfblarklink — Generate link Lark (Story & Issue) dari nama branch"
   echo "──────────────────────────────────────────────────────────────"
   echo "  Usage   : gfblarklink [branch-name] [-i id] [-p provider] [-m model]"
   echo "  Default : branch=branch aktif, provider=groq"
@@ -1557,6 +1580,8 @@ gfbmain() {
   echo "    gfblarklink kiki/feat/split-payment-23729368 → deteksi ID dari branch tertentu"
   echo "    gfblarklink -i 23687966                      → langsung pakai ID manual"
   echo "    gfblarklink . -p gemini                      → pakai Gemini untuk deteksi"
+  echo "  Output  : selalu tampilkan 2 link (Story & Issue), diurutkan mana yang"
+  echo "            lebih mungkin berdasar nama branch (mengandung 'fix' → Issue duluan)"
   echo "  Tips    : kalau ID tidak ditemukan otomatis, akan diminta input manual"
   echo ""
 
