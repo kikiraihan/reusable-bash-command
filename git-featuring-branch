@@ -560,7 +560,8 @@ gfbls() {
 # gfbpr master -p gemini -m gemini-1.5-pro → gemini, pilih model manual
 #
 # Model Groq gratis:
-# llama-3.3-70b-versatile  → default, kualitas terbaik
+# openai/gpt-oss-120b  → default
+# llama-3.3-70b-versatile  → kualitas terbaik
 # llama3-8b-8192           → lebih cepat, ringan
 # gemma2-9b-it             → Google Gemma
 # qwen-qwq-32b             → Qwen reasoning
@@ -605,7 +606,7 @@ gfbpr() {
   # Set default model per provider
   if [ -z "$model" ]; then
     case "$provider" in
-      groq)   model="llama-3.3-70b-versatile" ;;
+      groq)   model="openai/gpt-oss-120b" ;;
       gemini) model="gemini-2.0-flash" ;;
       *)
         echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
@@ -848,7 +849,7 @@ gfblarklink() {
     # Set default model per provider
     if [ -z "$model" ]; then
       case "$provider" in
-        groq)   model="llama-3.3-70b-versatile" ;;
+        groq)   model="openai/gpt-oss-120b" ;;
         gemini) model="gemini-2.0-flash" ;;
         *)
           echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
