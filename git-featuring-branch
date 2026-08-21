@@ -14,6 +14,8 @@ export GEMINI_API_KEY="***"
 # gfb master fitur-keren
 # gfb -p master fitur-keren
 # gfb -p develop fitur-keren
+# gfb -p dev_sprint_7a dev_cfl/.   → "." di akhir nama branch = nama branch aktif saat ini
+#                                     (akan minta konfirmasi dulu sebelum dibuat)
 gfb() {
   local push_to_origin=false
   local base_branch=""
@@ -37,6 +39,17 @@ gfb() {
   # "." berarti merefer ke branch aktif saat ini
   [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
 
+  # "." di akhir nama branch (mis. dev_cfl/.) berarti merefer ke branch aktif saat ini
+  # jadi "dev_cfl/." → "dev_cfl/<branch-aktif>"
+  local used_dot=false
+  if [ "$branch_name" = "." ]; then
+    branch_name=$(git rev-parse --abbrev-ref HEAD)
+    used_dot=true
+  elif [[ "$branch_name" == */. ]]; then
+    branch_name="${branch_name%.}$(git rev-parse --abbrev-ref HEAD)"
+    used_dot=true
+  fi
+
   # Validasi input
   if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
     echo "❌ Gunakan: gfb [-p] <base-branch> <nama-branch-baru>"
@@ -44,7 +57,18 @@ gfb() {
     echo "  gfb master fitur-login"
     echo "  gfb develop fitur-payment"
     echo "  gfb -p develop fitur-api"
+    echo "  gfb -p dev_sprint_7a dev_cfl/.   (\".\" = nama branch aktif saat ini)"
     return 1
+  fi
+
+  # Kalau pakai "." di nama branch, konfirmasi dulu sebelum bikin branch
+  if [ "$used_dot" = true ]; then
+    echo "🌿 Terdeteksi \".\" pada nama branch → branch baru akan dibuat sebagai: $branch_name"
+    read "confirm_dot?Lanjutkan buat branch '$branch_name'? (y/N): "
+    if [[ "$confirm_dot" != "y" && "$confirm_dot" != "Y" ]]; then
+      echo "❌ Dibatalkan."
+      return 1
+    fi
   fi
 
   echo "🔄 Pulling newest $base_branch..."
