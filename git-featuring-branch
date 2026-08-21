@@ -15,9 +15,12 @@ export GEMINI_API_KEY="***"
 # gfb -p master fitur-keren
 # gfb -p develop fitur-keren
 # gfb -p dev_sprint_7a dev_cfl/.   → "." di akhir nama branch = nama branch aktif saat ini
-#                                     (akan minta konfirmasi dulu sebelum dibuat)
+#                                     (akan minta konfirmasi dulu sebelum dibuat, lalu
+#                                      ditawari merge branch tsb ke branch baru)
+# gfb -p --merge dev_sprint_7a dev_cfl/.   → sama, tapi langsung merge tanpa ditanya
 gfb() {
   local push_to_origin=false
+  local auto_merge=false
   local base_branch=""
   local branch_name=""
 
@@ -25,6 +28,7 @@ gfb() {
   while [[ "$#" -gt 0 ]]; do
     case $1 in
       -p|--push) push_to_origin=true ;;
+      --merge) auto_merge=true ;;
       *)
         if [ -z "$base_branch" ]; then
           base_branch="$1"
@@ -42,22 +46,26 @@ gfb() {
   # "." di akhir nama branch (mis. dev_cfl/.) berarti merefer ke branch aktif saat ini
   # jadi "dev_cfl/." → "dev_cfl/<branch-aktif>"
   local used_dot=false
+  local dot_source_branch=""
   if [ "$branch_name" = "." ]; then
-    branch_name=$(git rev-parse --abbrev-ref HEAD)
+    dot_source_branch=$(git rev-parse --abbrev-ref HEAD)
+    branch_name="$dot_source_branch"
     used_dot=true
   elif [[ "$branch_name" == */. ]]; then
-    branch_name="${branch_name%.}$(git rev-parse --abbrev-ref HEAD)"
+    dot_source_branch=$(git rev-parse --abbrev-ref HEAD)
+    branch_name="${branch_name%.}$dot_source_branch"
     used_dot=true
   fi
 
   # Validasi input
   if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
-    echo "❌ Gunakan: gfb [-p] <base-branch> <nama-branch-baru>"
+    echo "❌ Gunakan: gfb [-p] [--merge] <base-branch> <nama-branch-baru>"
     echo "Contoh:"
     echo "  gfb master fitur-login"
     echo "  gfb develop fitur-payment"
     echo "  gfb -p develop fitur-api"
-    echo "  gfb -p dev_sprint_7a dev_cfl/.   (\".\" = nama branch aktif saat ini)"
+    echo "  gfb -p dev_sprint_7a dev_cfl/.            (\".\" = nama branch aktif saat ini)"
+    echo "  gfb -p --merge dev_sprint_7a dev_cfl/.    (langsung merge branch aktif tanpa ditanya)"
     return 1
   fi
 
@@ -81,6 +89,23 @@ gfb() {
 
   echo "🌿 Membuat branch: $branch_name dari $base_branch"
   git checkout -b "$branch_name"
+
+  # Kalau pakai ".", tawarkan (atau langsung, jika --merge) merge branch yang direferensikan "."
+  if [ "$used_dot" = true ]; then
+    if [ "$auto_merge" = true ]; then
+      echo "🔀 --merge aktif, langsung merge '$dot_source_branch' ke '$branch_name'..."
+      git merge "$dot_source_branch"
+      [ $? -ne 0 ] && echo "⚠️  Ada conflict saat merge. Selesaikan manual lalu commit."
+    else
+      read "merge_confirm?🔀 Merge branch '$dot_source_branch' ke branch baru '$branch_name'? (y/N): "
+      if [[ "$merge_confirm" == "y" || "$merge_confirm" == "Y" ]]; then
+        git merge "$dot_source_branch"
+        [ $? -ne 0 ] && echo "⚠️  Ada conflict saat merge. Selesaikan manual lalu commit."
+      else
+        echo "⏭️  Skip merge."
+      fi
+    fi
+  fi
 
   if [ "$push_to_origin" = true ]; then
     echo "🚀 Push dan set upstream..."
