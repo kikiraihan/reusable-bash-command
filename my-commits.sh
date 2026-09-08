@@ -16,15 +16,33 @@
 # Kalau tidak ada option mode, script akan menanyakan mau diapakan report-nya
 # setelah commit selesai dikumpulkan.
 #
-# Khusus mode AI (--daily / --weekly) butuh: python3, curl, dan
-# GROQ_API_KEY atau GEMINI_API_KEY di environment (sama seperti gfbpr).
+# Khusus mode AI (--daily / --weekly) butuh: python3, curl, dan API key.
+# API key bisa diisi langsung di variable MY_GROQ_API_KEY / MY_GEMINI_API_KEY
+# di bawah, atau lewat environment GROQ_API_KEY / GEMINI_API_KEY (spt gfbpr).
+
+# --------------------------------------------------
+# AI API KEY (isi di sini)
+# --------------------------------------------------
+# Groq   → daftar gratis di https://console.groq.com      (format: gsk_xxxxxx)
+# Gemini → daftar gratis di https://aistudio.google.com/apikey (format: AIza_xxxxxx)
+#
+# ⚠️  JANGAN commit key asli kalau repo ini public.
+#    Isi key-nya di copy lokal saja, atau kosongkan di sini dan tetap pakai
+#    "export GROQ_API_KEY=..." dari ~/.zshrc / git-featuring-branch.
+MY_GROQ_API_KEY=""
+MY_GEMINI_API_KEY=""
+
+# Key yang diisi di atas menang. Kalau dikosongkan, pakai yang sudah di-export
+# di environment (mis. dari file git-featuring-branch).
+[ -n "$MY_GROQ_API_KEY" ]   && GROQ_API_KEY="$MY_GROQ_API_KEY"
+[ -n "$MY_GEMINI_API_KEY" ] && GEMINI_API_KEY="$MY_GEMINI_API_KEY"
 
 OUTPUT_MODE=""          # show | file | daily | weekly (kosong = tanya interaktif)
 AI_PROVIDER="groq"      # groq (default) / gemini
 AI_MODEL=""             # kosong = pakai default per provider
 
 show_help() {
-    sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Parsing argumen
@@ -108,14 +126,16 @@ prepare_ai() {
 
     if [ "$AI_PROVIDER" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
         echo "❌ GROQ_API_KEY belum di-set."
-        echo "Daftar gratis di https://console.groq.com lalu:"
-        echo "  export GROQ_API_KEY=\"gsk_xxxxxx\""
+        echo "Daftar gratis di https://console.groq.com lalu isi salah satu:"
+        echo "  - variable MY_GROQ_API_KEY di bagian atas $0"
+        echo "  - atau: export GROQ_API_KEY=\"gsk_xxxxxx\""
         return 1
     fi
     if [ "$AI_PROVIDER" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
         echo "❌ GEMINI_API_KEY belum di-set."
-        echo "Daftar gratis di https://aistudio.google.com/apikey lalu:"
-        echo "  export GEMINI_API_KEY=\"AIza_xxxxxx\""
+        echo "Daftar gratis di https://aistudio.google.com/apikey lalu isi salah satu:"
+        echo "  - variable MY_GEMINI_API_KEY di bagian atas $0"
+        echo "  - atau: export GEMINI_API_KEY=\"AIza_xxxxxx\""
         return 1
     fi
 
