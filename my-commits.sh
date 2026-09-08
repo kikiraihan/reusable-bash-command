@@ -164,6 +164,7 @@ else
     echo ""
     echo "Select branches (comma-separated numbers, 'all', or type a name manually):"
     echo "  Wildcards supported: *kiki* (contains), kiki* (starts with), *kiki (ends with)"
+    echo "  You can also include general branches: e.g. *kiki*, master, main, develop, staging"
     read -p "Selection: " BRANCH_SELECTION
 
     if [ "$BRANCH_SELECTION" = "all" ]; then
