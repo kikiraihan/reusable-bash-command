@@ -91,10 +91,28 @@ Option AI:
 FITUR AI REPORT
 ---------------
 
-Butuh API key yang sama dengan gfbpr di file git-featuring-branch:
+Butuh API key. Ada 2 cara isi:
+
+CARA 1 - langsung di dalam script (paling gampang, script berdiri sendiri):
+   Buka my-commits.sh, di bagian atas ada:
+
+      MY_GROQ_API_KEY=""
+      MY_GEMINI_API_KEY=""
+
+   Isi salah satu, contoh:
+
+      MY_GROQ_API_KEY="gsk_xxxxxx"
+
+CARA 2 - dari environment (sama seperti gfbpr di git-featuring-branch):
 
    export GROQ_API_KEY="gsk_xxxxxx"      -> https://console.groq.com
    export GEMINI_API_KEY="AIza_xxxxxx"   -> https://aistudio.google.com/apikey
+
+Kalau MY_GROQ_API_KEY / MY_GEMINI_API_KEY diisi, itu yang dipakai.
+Kalau dikosongkan, script fallback ke environment.
+
+PERINGATAN: jangan commit key asli kalau repo-nya public. Isi key hanya di
+copy lokal, atau tetap pakai CARA 2.
 
 Butuh juga python3 dan curl.
 
@@ -214,7 +232,8 @@ Problem: Branch tidak ditemukan
 Solusi: Check nama branch dengan 'git branch -a' di masing-masing project
 
 Problem: "GROQ_API_KEY belum di-set"
-Solusi: export GROQ_API_KEY="gsk_xxxxxx" (daftar gratis di console.groq.com)
+Solusi: Isi MY_GROQ_API_KEY di bagian atas my-commits.sh, atau
+        export GROQ_API_KEY="gsk_xxxxxx" (daftar gratis di console.groq.com)
         atau pakai Gemini: ./my-commits.sh --daily -p gemini
 
 Problem: "API error: model ... does not exist"
@@ -233,7 +252,8 @@ PERSYARATAN
 - Bash shell
 - Git repository yang valid di folder-folder project
 - Git user email dan name sudah dikonfigurasi
-- Khusus mode AI: python3, curl, dan GROQ_API_KEY / GEMINI_API_KEY
+- Khusus mode AI: python3, curl, dan API key (MY_GROQ_API_KEY di dalam script
+  atau GROQ_API_KEY / GEMINI_API_KEY di environment)
 
 
 AUTHOR
