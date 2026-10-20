@@ -1199,6 +1199,8 @@ $diff"
 # gfbstatus -f           → git fetch dulu supaya ahead/behind akurat
 # gfbstatus -a           → tampilkan semua file (tanpa dipotong)
 # gfbstatus -w           → mode watch, refresh tiap 3 detik (gfbstatus -w 5 → tiap 5 detik)
+# gfbstatus -r           → + recap AI: sebelumnya mengerjakan apa & kapan (groq)
+# gfbstatus -r -p gemini → recap pakai Gemini
 
 # Ubah selisih detik jadi teks relatif, mis. "3 jam lalu"
 _gfb_ago() {
@@ -1249,12 +1251,133 @@ _gfb_status_sum() {
   echo "$1" | awk -F'\t' '$1 != "-" { a += $1; d += $2 } END { printf "+%d -%d", a, d }'
 }
 
+# Recap via AI: "sebelumnya saya mengerjakan apa, dan kapan"
+# Konteks: commit di branch ini, perubahan yang belum di-commit, kapan file terakhir diedit,
+# riwayat checkout (reflog), dan stash.
+# _gfb_status_recap <provider> <model> [base-ref]
+_gfb_status_recap() {
+  local provider="$1" model="$2" base_ref="$3"
+  local D=$'\e[2m' B=$'\e[1m' N=$'\e[0m'
+  local max_diff_chars=8000
+  local now=$(date +%s)
+
+  if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
+    echo "❌ GROQ_API_KEY belum di-set, recap dilewati."; return 1
+  fi
+  if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
+    echo "❌ GEMINI_API_KEY belum di-set, recap dilewati."; return 1
+  fi
+
+  pushd -q "$(git rev-parse --show-toplevel)" || return 1
+
+  local branch=$(git rev-parse --abbrev-ref HEAD)
+  local fmt='%h | %ad | %an | %s'
+  local datefmt='--date=format:%Y-%m-%d %H:%M'
+
+  # Commit milik branch ini (vs base); kalau tidak ada, 15 commit terakhir
+  local commits=""
+  if [ -n "$base_ref" ]; then
+    commits=$(git log "$base_ref"..HEAD -n 20 --format="$fmt" "$datefmt" --shortstat 2>/dev/null | sed '/^$/d')
+  fi
+  local commits_label="Commits on this branch that are not in $base_ref (newest first)"
+  if [ -z "$commits" ]; then
+    commits=$(git log -n 15 --format="$fmt" "$datefmt" --shortstat 2>/dev/null | sed '/^$/d')
+    commits_label="Latest commits on HEAD (newest first)"
+  fi
+
+  # Perubahan yang belum di-commit (staged + unstaged dibanding HEAD)
+  local -a noisy=(':(top,exclude)*.lock' ':(top,exclude)*package-lock.json' ':(top,exclude)*pnpm-lock.yaml'
+                  ':(top,exclude)*.min.js' ':(top,exclude)*.min.css')
+  local staged_files=$(git diff --cached --name-status)
+  local unstaged_files=$(git diff --name-status)
+  local untracked=$(git ls-files --others --exclude-standard | head -n 30)
+  local diff=$(git diff HEAD --no-color -- ":/" "${noisy[@]}" 2>/dev/null)
+  (( ${#diff} > max_diff_chars )) && diff="${diff[1,$max_diff_chars]}"$'\n'"... (diff truncated)"
+
+  # Kapan terakhir file diedit (dari mtime file yang berubah/untracked)
+  local last_edit="no uncommitted file changes"
+  local -a touched=(${(f)"$(git diff HEAD --name-only --diff-filter=ACMRT 2>/dev/null)"} ${(f)untracked})
+  if (( ${#touched} )); then
+    local newest=$(stat -f '%m %N' "${touched[@]}" 2>/dev/null | sort -n | tail -1)
+    if [ -n "$newest" ]; then
+      local ts=${newest%% *}
+      last_edit="$(date -r $ts '+%Y-%m-%d %H:%M') ($(_gfb_ago $(( now - ts )))) on file ${newest#* }"
+    fi
+  fi
+
+  # Kapan terakhir commit & kapan pindah ke branch ini
+  local last_commit=""
+  if git rev-parse --verify -q HEAD >/dev/null; then
+    local cts=$(git log -1 --format=%ct)
+    last_commit="$(date -r $cts '+%Y-%m-%d %H:%M') ($(_gfb_ago $(( now - cts ))))"
+  fi
+  local reflog=$(git reflog -n 15 --date=format:'%Y-%m-%d %H:%M' --format='%gd | %gs' 2>/dev/null)
+  local stashes=$(git stash list -n 5 --format='%gd | %cd | %gs' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)
+
+  popd -q
+
+  local prompt="You help a developer who forgot what they were working on in this git repository.
+Using the context below, write a short recap IN INDONESIAN (casual but clear) so they can resume quickly.
+
+Format exactly like this (plain text, no markdown headers, no code fences):
+🎯 Sedang mengerjakan: <1–2 sentences: the goal/feature/fix, inferred from branch name, commits and diff>
+🕒 Terakhir aktif: <when: last file edit and/or last commit, with date and relative time>
+✅ Sudah selesai:
+- <done items, from commits; max 4 bullets>
+🚧 Belum selesai / sedang berjalan:
+- <uncommitted work: what the staged/unstaged changes are doing; max 4 bullets; write \"- (tidak ada)\" if none>
+👉 Langkah berikutnya:
+- <1–3 concrete next steps>
+
+Rules:
+- Be specific (mention feature names, functions, files) but brief; max ~15 lines total.
+- Infer intent; do not just list file names. If something is uncertain, say \"kemungkinan\".
+- Use the provided dates; do not invent dates.
+
+Now: $(date '+%Y-%m-%d %H:%M')
+Branch: $branch
+Last file edit: $last_edit
+Last commit: ${last_commit:-none}
+
+$commits_label:
+${commits:-none}
+
+Staged files:
+${staged_files:-none}
+
+Unstaged files:
+${unstaged_files:-none}
+
+Untracked files:
+${untracked:-none}
+
+Uncommitted diff (vs HEAD):
+${diff:-none}
+
+Recent reflog (checkouts/commits/merges, newest first):
+${reflog:-none}
+
+Stashes:
+${stashes:-none}"
+
+  echo "🧠 ${B}Recap (AI • $provider/$model)${N}  ${D}⏳ generating...${N}"
+  local result
+  result=$(_gfb_ai_generate "$provider" "$model" "$prompt") || return 1
+  # Hapus baris "generating..." lalu tampilkan hasil
+  printf '\e[1A\e[2K'
+  echo "🧠 ${B}Recap (AI • $provider/$model)${N}"
+  print -r -- "$result" | sed 's/^/   /'
+}
+
 gfbstatus() {
   local base_branch=""
   local do_fetch=false
   local limit=20
   local watch=0
   local large_mb=5  # file staged/untracked di atas ukuran ini diberi peringatan
+  local recap=false
+  local provider="groq"  # untuk -r
+  local model=""
 
   # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
@@ -1266,12 +1389,18 @@ gfbstatus() {
         watch=3
         if [[ "$2" == <-> ]]; then watch=$2; shift; fi
         ;;
+      -r|--recap) recap=true ;;
+      -p|--provider) provider="$2"; shift ;;
+      -m|--model) model="$2"; shift ;;
       -h|--help)
-        echo "Gunakan: gfbstatus [-b base-branch] [-f] [-a] [-w [detik]]"
+        echo "Gunakan: gfbstatus [-b base-branch] [-f] [-a] [-w [detik]] [-r [-p provider] [-m model]]"
         echo "  -b / --base   → base branch pembanding (default: master, lalu main)"
         echo "  -f / --fetch  → git fetch dulu supaya ahead/behind akurat"
         echo "  -a / --all    → tampilkan semua file (default maks $limit per bagian)"
         echo "  -w / --watch  → refresh otomatis (default tiap 3 detik), Ctrl+C untuk keluar"
+        echo "  -r / --recap  → recap AI: sebelumnya mengerjakan apa & kapan"
+        echo "  -p / --provider → groq (default) atau gemini, untuk -r"
+        echo "  -m / --model    → pilih model manual, untuk -r"
         return 0
         ;;
       *)
@@ -1288,6 +1417,23 @@ gfbstatus() {
   fi
 
   local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' B=$'\e[1m' D=$'\e[2m' N=$'\e[0m'
+
+  if [ "$recap" = true ]; then
+    if (( watch > 0 )); then
+      echo "❌ -r tidak bisa digabung dengan -w (setiap refresh akan memanggil AI)."
+      return 1
+    fi
+    if [ -z "$model" ]; then
+      case "$provider" in
+        groq)   model="openai/gpt-oss-120b" ;;
+        gemini) model="gemini-2.0-flash" ;;
+        *)
+          echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
+          return 1
+          ;;
+      esac
+    fi
+  fi
 
   # Mode watch: jalankan ulang gfbstatus terus-menerus (fetch hanya di putaran pertama)
   if (( watch > 0 )); then
@@ -1520,6 +1666,12 @@ gfbstatus() {
     echo "✨ ${G}Bersih & sinkron, tidak ada yang perlu dilakukan.${N}"
   fi
   echo ""
+
+  # ── Recap AI (opsional, -r) ──────────────────────────────
+  if [ "$recap" = true ]; then
+    _gfb_status_recap "$provider" "$model" "$base_ref"
+    echo ""
+  fi
 }
 
 # Git Feature Branch Lark Link
@@ -2384,6 +2536,11 @@ gfbmain() {
   echo "            -f / --fetch  → git fetch dulu supaya ↑↓ akurat"
   echo "            -a / --all    → tampilkan semua file (default maks 20/bagian)"
   echo "            -w / --watch  → refresh otomatis (default 3 detik), Ctrl+C keluar"
+  echo "            -r / --recap  → 🧠 recap AI: sebelumnya mengerjakan apa & kapan"
+  echo "            -p / -m       → provider (groq/gemini) & model untuk -r"
+  echo "  Contoh  :"
+  echo "    gfbstatus -r                          → status + recap via groq"
+  echo "    gfbstatus -r -p gemini                → recap via Gemini"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
