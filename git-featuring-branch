@@ -449,7 +449,8 @@ gfbfind() {
 }
 
 # Git Feature Branch List
-# Menampilkan list branch yang mengandung keyword tertentu
+# Menampilkan list branch yang mengandung keyword tertentu,
+# diurutkan dari yang terakhir digunakan (checkout / commit terbaru di atas)
 # Opsional: -r untuk include remote branches juga
 #
 # contoh:
@@ -518,9 +519,62 @@ gfbls() {
   echo "🔄 Fetching origin..."
   git fetch --quiet 2>/dev/null
 
-  local i=1
-  while read -r branch; do
+  # Waktu checkout terakhir per branch dari reflog HEAD (baris pertama = terbaru)
+  local checkout_times
+  checkout_times=$(git reflog show HEAD --date=unix --format='%gd %gs' 2>/dev/null \
+    | awk '/checkout: moving from/ && !seen[$NF]++ {gsub(/[^0-9]/, "", $1); print $1, $NF}')
+  local current_branch=$(git branch --show-current 2>/dev/null)
+
+  # Hitung waktu terakhir digunakan tiap branch, lalu urutkan terbaru di atas
+  # last used = max(checkout terakhir, update ref terakhir di reflog, commit terakhir)
+  local now=$(date +%s)
+  local sorted_branches
+  sorted_branches=$(while read -r branch; do
     [ -z "$branch" ] && continue
+    local ts=0
+    if [ "$branch" = "$current_branch" ]; then
+      ts=$now
+    elif git show-ref --verify --quiet "refs/heads/$branch"; then
+      local t_checkout=$(echo "$checkout_times" | awk -v b="$branch" '$2 == b {print $1; exit}')
+      local t_reflog=$(git reflog show "refs/heads/$branch" -1 --date=unix --format='%gd' 2>/dev/null | tr -cd '0-9')
+      local t_commit=$(git log -1 --format='%ct' "refs/heads/$branch" 2>/dev/null)
+      for t in $t_checkout $t_reflog $t_commit; do
+        [ "$t" -gt "$ts" ] 2>/dev/null && ts=$t
+      done
+    else
+      ts=$(git log -1 --format='%ct' "refs/remotes/origin/$branch" 2>/dev/null)
+    fi
+    printf "%s\t%s\n" "${ts:-0}" "$branch"
+  done <<< "$all_branches" | sort -t $'\t' -k1,1nr)
+
+  # Awal hari ini (00:00) untuk menentukan "kemarin"
+  local today_start=$(( now - 10#$(date +%H) * 3600 - 10#$(date +%M) * 60 - 10#$(date +%S) ))
+
+  local i=1
+  while IFS=$'\t' read -r ts branch; do
+    [ -z "$branch" ] && continue
+
+    # Format waktu relatif
+    local when=""
+    local diff=$(( now - ts ))
+    if [ "$branch" = "$current_branch" ]; then
+      when="sedang aktif"
+    elif [ "$ts" -le 0 ] 2>/dev/null; then
+      when="tidak diketahui"
+    elif [ "$diff" -lt 60 ]; then
+      when="baru saja"
+    elif [ "$diff" -lt 3600 ]; then
+      when="$(( diff / 60 )) menit yang lalu"
+    elif [ "$ts" -ge "$today_start" ]; then
+      when="$(( diff / 3600 )) jam yang lalu"
+    elif [ "$ts" -ge $(( today_start - 86400 )) ]; then
+      when="kemarin $(date -d "@$ts" +%H:%M 2>/dev/null || date -r "$ts" +%H:%M)"
+    elif [ "$ts" -ge $(( today_start - 6 * 86400 )) ]; then
+      when="$(( (today_start - ts) / 86400 + 1 )) hari yang lalu"
+    else
+      when=$(date -d "@$ts" '+%d %b %Y' 2>/dev/null || date -r "$ts" '+%d %b %Y')
+    fi
+
     local has_local=false
     local has_remote=false
     echo "$local_branches"  | grep -qx "$branch" && has_local=true
@@ -534,17 +588,18 @@ gfbls() {
       [ "$ahead" -gt 0 ] 2>/dev/null  && sync_info+=" ↑${ahead}"
       [ "$behind" -gt 0 ] 2>/dev/null && sync_info+=" ↓${behind}"
       [ -z "$sync_info" ] && sync_info=" ✓"
-      echo "  [$i] $branch$sync_info"
+      echo "  [$i] $branch$sync_info  🕒 $when"
       echo "       └─ origin/$branch"
     elif $has_local; then
-      echo "  [$i] $branch  (local only — belum pernah push)"
+      echo "  [$i] $branch  (local only — belum pernah push)  🕒 $when"
     else
-      echo "  [$i] origin/$branch  (remote only — belum di-fetch lokal)"
+      echo "  [$i] origin/$branch  (remote only — belum di-fetch lokal)  🕒 $when"
     fi
     ((i++))
-  done <<< "$all_branches"
+  done <<< "$sorted_branches"
   echo ""
   echo "  ↑ = commit lokal belum di-push   ↓ = commit remote belum di-pull   ✓ = sinkron"
+  echo "  🕒 = terakhir digunakan (checkout / commit terakhir), terbaru di atas"
   echo ""
 }
 
@@ -1692,6 +1747,7 @@ gfbmain() {
   echo "  gfbls — Tampilkan branch yang mengandung keyword tertentu"
   echo "──────────────────────────────────────────────────────────────"
   echo "  Usage   : gfbls <keyword> [-r]"
+  echo "  Info    : diurutkan dari branch yang terakhir digunakan + waktu relatif (🕒)"
   echo "  Opsi    : -r / --remote  → include remote branches"
   echo "  Contoh  :"
   echo "    gfbls kiki                      → cari branch local mengandung 'kiki'"
