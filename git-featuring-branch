@@ -522,7 +522,7 @@ gfbls() {
   # Waktu checkout terakhir per branch dari reflog HEAD (baris pertama = terbaru)
   local checkout_times
   checkout_times=$(git reflog show HEAD --date=unix --format='%gd %gs' 2>/dev/null \
-    | awk '/checkout: moving from/ && !seen[$NF]++ {gsub(/[^0-9]/, "", $1); print $1, $NF}')
+    | awk '/checkout: moving from/ && !seen[$NF]++ {sub(/.*@\{/, "", $1); sub(/\}.*/, "", $1); print $1, $NF}')
   local current_branch=$(git branch --show-current 2>/dev/null)
 
   # Hitung waktu terakhir digunakan tiap branch, lalu urutkan terbaru di atas
@@ -533,10 +533,10 @@ gfbls() {
     [ -z "$branch" ] && continue
     local ts=0
     if [ "$branch" = "$current_branch" ]; then
-      ts=$now
+      ts=$(( now + 1 ))  # branch aktif selalu paling atas
     elif git show-ref --verify --quiet "refs/heads/$branch"; then
       local t_checkout=$(echo "$checkout_times" | awk -v b="$branch" '$2 == b {print $1; exit}')
-      local t_reflog=$(git reflog show "refs/heads/$branch" -1 --date=unix --format='%gd' 2>/dev/null | tr -cd '0-9')
+      local t_reflog=$(git reflog show "refs/heads/$branch" -1 --date=unix --format='%gd' 2>/dev/null | sed -n 's/.*@{\([0-9]*\)}$/\1/p')
       local t_commit=$(git log -1 --format='%ct' "refs/heads/$branch" 2>/dev/null)
       for t in $t_checkout $t_reflog $t_commit; do
         [ "$t" -gt "$ts" ] 2>/dev/null && ts=$t
