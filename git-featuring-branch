@@ -1188,6 +1188,8 @@ $diff"
 #   - branch, upstream (ahead/behind), posisi vs base branch, fetch terakhir
 #   - operasi yang sedang berjalan (merge/rebase/cherry-pick/revert/bisect)
 #   - staged / changes / untracked / conflict + jumlah baris (+/-)
+#   - tanda ◐ untuk file yang sebagian di-stage
+#   - peringatan file sensitif (.env, *.pem, key, …) / besar di staged & untracked
 #   - stash, commit belum di-push / belum di-pull
 #   - saran langkah berikutnya
 #
@@ -1196,6 +1198,7 @@ $diff"
 # gfbstatus -b develop   → bandingkan dengan develop
 # gfbstatus -f           → git fetch dulu supaya ahead/behind akurat
 # gfbstatus -a           → tampilkan semua file (tanpa dipotong)
+# gfbstatus -w           → mode watch, refresh tiap 3 detik (gfbstatus -w 5 → tiap 5 detik)
 
 # Ubah selisih detik jadi teks relatif, mis. "3 jam lalu"
 _gfb_ago() {
@@ -1208,10 +1211,11 @@ _gfb_ago() {
 }
 
 # Cetak daftar file dari "git diff --name-status" + "--numstat" (urutannya sama)
-# _gfb_status_files <limit> <name-status> <numstat>
+# File yang ada di <partial> (daftar path, per baris) ditandai "◐ sebagian"
+# _gfb_status_files <limit> <name-status> <numstat> [partial]
 _gfb_status_files() {
   local limit=$1
-  local -a ns=(${(f)2}) nums=(${(f)3})
+  local -a ns=(${(f)2}) nums=(${(f)3}) partial=(${(f)4})
   local i st file add del counts color
   local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' D=$'\e[2m' N=$'\e[0m'
 
@@ -1235,6 +1239,7 @@ _gfb_status_files() {
       (( add > 0 )) && counts+="${G}+$add${N} "
       (( del > 0 )) && counts+="${R}-$del${N}"
     fi
+    (( ${partial[(Ie)${ns[i]##*$'\t'}]} )) && counts+=" ${Y}◐ sebagian${N}"
     printf "   %s%-2s%s %-55s %s\n" "$color" "${st[1]}" "$N" "$file" "$counts"
   done
 }
@@ -1248,6 +1253,8 @@ gfbstatus() {
   local base_branch=""
   local do_fetch=false
   local limit=20
+  local watch=0
+  local large_mb=5  # file staged/untracked di atas ukuran ini diberi peringatan
 
   # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
@@ -1255,11 +1262,16 @@ gfbstatus() {
       -b|--base) base_branch="$2"; shift ;;
       -f|--fetch) do_fetch=true ;;
       -a|--all) limit=0 ;;
+      -w|--watch)
+        watch=3
+        if [[ "$2" == <-> ]]; then watch=$2; shift; fi
+        ;;
       -h|--help)
-        echo "Gunakan: gfbstatus [-b base-branch] [-f] [-a]"
+        echo "Gunakan: gfbstatus [-b base-branch] [-f] [-a] [-w [detik]]"
         echo "  -b / --base   → base branch pembanding (default: master, lalu main)"
         echo "  -f / --fetch  → git fetch dulu supaya ahead/behind akurat"
         echo "  -a / --all    → tampilkan semua file (default maks $limit per bagian)"
+        echo "  -w / --watch  → refresh otomatis (default tiap 3 detik), Ctrl+C untuk keluar"
         return 0
         ;;
       *)
@@ -1276,6 +1288,27 @@ gfbstatus() {
   fi
 
   local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' B=$'\e[1m' D=$'\e[2m' N=$'\e[0m'
+
+  # Mode watch: jalankan ulang gfbstatus terus-menerus (fetch hanya di putaran pertama)
+  if (( watch > 0 )); then
+    local -a pass=()
+    [ -n "$base_branch" ] && pass+=(-b "$base_branch")
+    (( limit == 0 )) && pass+=(-a)
+    local out first=true
+    while true; do
+      if [[ "$first" = true && "$do_fetch" = true ]]; then
+        out=$(gfbstatus "${pass[@]}" -f 2>&1)
+      else
+        out=$(gfbstatus "${pass[@]}" 2>&1)
+      fi
+      clear
+      print -r -- "$out"
+      echo "${D}🔁 refresh tiap ${watch} detik • $(date +%H:%M:%S) • Ctrl+C untuk keluar${N}"
+      first=false
+      sleep $watch || break
+    done
+    return 0
+  fi
 
   # Selalu baca dari root repo, walau dipanggil dari subfolder
   pushd -q "$(git rev-parse --show-toplevel)" || return 1
@@ -1367,6 +1400,11 @@ gfbstatus() {
   local changes_num=$(git diff --numstat --diff-filter=ACDMRTX -- "${skip[@]}" 2>/dev/null)
   local untracked=$(git ls-files --others --exclude-standard)
 
+  # File yang sebagian di-stage (ada di Staged sekaligus di Changes)
+  local -a unstaged_names=(${(f)"$(git diff --name-only -- "${skip[@]}")"})
+  local -a staged_names=(${(f)"$(git diff --cached --name-only -- "${skip[@]}")"})
+  local partial=${(F)unstaged_names:*staged_names}
+
   if [ -n "$conflicts" ]; then
     local -a cf=(${(f)conflicts})
     echo ""
@@ -1379,7 +1417,7 @@ gfbstatus() {
   if [ -n "$staged_ns" ]; then
     local -a sl=(${(f)staged_ns})
     echo "✅ ${G}${B}Staged (${#sl} file, $(_gfb_status_sum "$staged_num"))${N}  ${D}→ akan masuk commit${N}"
-    _gfb_status_files $limit "$staged_ns" "$staged_num"
+    _gfb_status_files $limit "$staged_ns" "$staged_num" "$partial"
     hints+=("Ada yang di-stage → gfbcm untuk generate commit message")
   else
     echo "✅ ${D}Staged: kosong${N}"
@@ -1389,7 +1427,8 @@ gfbstatus() {
   if [ -n "$changes_ns" ]; then
     local -a cl=(${(f)changes_ns})
     echo "✏️  ${Y}${B}Changes (${#cl} file, $(_gfb_status_sum "$changes_num"))${N}  ${D}→ belum di-stage${N}"
-    _gfb_status_files $limit "$changes_ns" "$changes_num"
+    _gfb_status_files $limit "$changes_ns" "$changes_num" "$partial"
+    [ -n "$partial" ] && hints+=("◐ = sebagian di-stage → git add <file> kalau sisa perubahannya juga mau ikut commit")
   else
     echo "✏️  ${D}Changes: kosong${N}"
   fi
@@ -1410,6 +1449,35 @@ gfbstatus() {
 
   if [[ -z "$staged_ns" && ( -n "$changes_ns" || -n "$untracked" ) ]]; then
     hints+=("Belum ada yang di-stage → git add <file> (atau git add -p untuk sebagian)")
+  fi
+
+  # ── Peringatan: file sensitif / besar di staged atau untracked ──
+  local -a warns=()
+  local wfile wbase wsize kind
+  local -a staged_files=(${(f)"$(git diff --cached --name-only --diff-filter=ACMRT -- "${skip[@]}")"})
+  for wfile in "${staged_files[@]}" ${(f)untracked}; do
+    [ -z "$wfile" ] && continue
+    kind="staged"
+    (( ${staged_files[(Ie)$wfile]} )) || kind="untracked"
+    wbase=${wfile:t}
+    case $wbase in
+      .env.example|.env.sample|.env.template|*.pub) ;;
+      .env|.env.*|*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|id_rsa*|id_ed25519*|id_ecdsa*|credentials*.json|service-account*.json|*.sqlite|*.sqlite3)
+        warns+=("${R}🔐 $wfile${N} ${D}($kind)${N} kemungkinan berisi secret")
+        ;;
+    esac
+    if [ -f "$wfile" ]; then
+      wsize=$(stat -f %z "$wfile" 2>/dev/null)
+      if (( wsize > large_mb * 1024 * 1024 )); then
+        warns+=("${Y}🐘 $wfile${N} ${D}($kind)${N} berukuran $(( wsize / 1024 / 1024 )) MB")
+      fi
+    fi
+  done
+  if (( ${#warns} )); then
+    echo ""
+    echo "🚨 ${R}${B}Perhatian (${#warns})${N}"
+    printf "   %s\n" "${warns[@]}"
+    hints+=("File sensitif/besar → tambahkan ke .gitignore (kalau sudah staged: git restore --staged <file>)")
   fi
 
   # ── Stash ────────────────────────────────────────────────
@@ -2307,13 +2375,15 @@ gfbmain() {
   echo "──────────────────────────────────────────────────────────────"
   echo "  gfbstatus — git status versi lengkap"
   echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbstatus [-b base-branch] [-f] [-a]"
+  echo "  Usage   : gfbstatus [-b base-branch] [-f] [-a] [-w [detik]]"
   echo "  Isi     : branch & upstream (↑↓), posisi vs base, fetch terakhir,"
   echo "            merge/rebase berjalan, conflict, staged, changes, untracked,"
+  echo "            ◐ file sebagian di-stage, 🚨 file sensitif (.env, *.pem, …) / besar (>5MB),"
   echo "            stash, commit belum push/pull, saran langkah berikut"
   echo "  Opsi    : -b / --base   → base pembanding (default: master, lalu main)"
   echo "            -f / --fetch  → git fetch dulu supaya ↑↓ akurat"
   echo "            -a / --all    → tampilkan semua file (default maks 20/bagian)"
+  echo "            -w / --watch  → refresh otomatis (default 3 detik), Ctrl+C keluar"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
