@@ -8,114 +8,247 @@
 export GROQ_API_KEY="***"
 export GEMINI_API_KEY="***"
 
-# command untuk buat branch baru dari master, langsung push, dan set upstream
-# Fungsi GFB (Git Feature Branch) dengan opsi push
+# command untuk buat branch baru dari base branch, opsional merge & push
+# Fungsi GFB (Git Feature Branch)
 # contoh penggunaan:
 # gfb master fitur-keren
-# gfb -p master fitur-keren
 # gfb -p develop fitur-keren
-# gfb -p dev_sprint_7a dev_cfl/.   → "." di akhir nama branch = nama branch aktif saat ini
-#                                     (akan minta konfirmasi dulu sebelum dibuat, lalu
-#                                      ditawari merge branch tsb ke branch baru)
-# gfb -p --merge dev_sprint_7a dev_cfl/.   → sama, tapi langsung merge tanpa ditanya
+# gfb -pm dev_sprint_9a dev-cfl-13/@   → "@" = nama branch aktif saat ini (seperti di git)
+#                                         jadi dev-cfl-13/@ → dev-cfl-13/<branch-aktif>,
+#                                         lalu branch aktif di-merge ke branch baru
+# gfb -pmy dev_sprint_9a dev-cfl-13/@  → sama, tanpa konfirmasi
+# gfb -n dev_sprint_9a dev-cfl-13/@    → dry-run, hanya tampilkan rencana
+# Cara lama ("." dan --merge) masih jalan, tapi akan muncul tips cara barunya.
+_gfb_usage() {
+  echo "Gunakan: gfb [-p] [-m] [-y] [-n] <base-branch> <nama-branch-baru>"
+  echo ""
+  echo "  -p   push ke origin + set upstream"
+  echo "  -m   merge branch aktif ke branch baru (hanya bersama placeholder @)"
+  echo "  -y   tanpa konfirmasi"
+  echo "  -n   dry-run, hanya tampilkan rencana"
+  echo "  -h   bantuan ini"
+  echo "  (flag bisa digabung: -pm, -pmy)"
+  echo ""
+  echo "  @ = nama branch aktif saat ini. Bisa dipakai sebagai base, nama, atau prefix/@"
+  echo ""
+  echo "Contoh:"
+  echo "  gfb master fitur-login"
+  echo "  gfb -p develop fitur-api"
+  echo "  gfb -pm dev_sprint_9a dev-cfl-13/@     (dev-cfl-13/<branch-aktif> + merge branch aktif)"
+  echo "  gfb -n  dev_sprint_9a dev-cfl-13/@     (lihat rencana saja)"
+}
+
 gfb() {
   local push_to_origin=false
   local auto_merge=false
+  local assume_yes=false
+  local dry_run=false
   local base_branch=""
   local branch_name=""
+  local -a legacy_hints=()
+  local -a extra_args=()
+  local i c
 
   # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -p|--push) push_to_origin=true ;;
-      --merge) auto_merge=true ;;
+      -h|--help) _gfb_usage; return 0 ;;
+      --push) push_to_origin=true ;;
+      --merge) auto_merge=true; legacy_hints+=("--merge → -m (bisa digabung: -pm)") ;;
+      --yes) assume_yes=true ;;
+      --dry-run) dry_run=true ;;
+      --*) echo "❌ Flag tidak dikenal: $1"; echo ""; _gfb_usage; return 1 ;;
+      -?*)
+        # flag pendek, bisa digabung (mis. -pmy)
+        for (( i = 2; i <= ${#1}; i++ )); do
+          c=${1[i]}
+          case $c in
+            p) push_to_origin=true ;;
+            m) auto_merge=true ;;
+            y) assume_yes=true ;;
+            n) dry_run=true ;;
+            h) _gfb_usage; return 0 ;;
+            *) echo "❌ Flag tidak dikenal: -$c (dari $1)"; echo ""; _gfb_usage; return 1 ;;
+          esac
+        done
+        ;;
       *)
         if [ -z "$base_branch" ]; then
           base_branch="$1"
         elif [ -z "$branch_name" ]; then
           branch_name="$1"
+        else
+          extra_args+=("$1")
         fi
         ;;
     esac
     shift
   done
 
-  # "." berarti merefer ke branch aktif saat ini
-  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
-
-  # "." di akhir nama branch (mis. dev_cfl/.) berarti merefer ke branch aktif saat ini
-  # jadi "dev_cfl/." → "dev_cfl/<branch-aktif>"
-  local used_dot=false
-  local dot_source_branch=""
-  if [ "$branch_name" = "." ]; then
-    dot_source_branch=$(git rev-parse --abbrev-ref HEAD)
-    branch_name="$dot_source_branch"
-    used_dot=true
-  elif [[ "$branch_name" == */. ]]; then
-    dot_source_branch=$(git rev-parse --abbrev-ref HEAD)
-    branch_name="${branch_name%.}$dot_source_branch"
-    used_dot=true
-  fi
-
-  # Validasi input
-  if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
-    echo "❌ Gunakan: gfb [-p] [--merge] <base-branch> <nama-branch-baru>"
-    echo "Contoh:"
-    echo "  gfb master fitur-login"
-    echo "  gfb develop fitur-payment"
-    echo "  gfb -p develop fitur-api"
-    echo "  gfb -p dev_sprint_7a dev_cfl/.            (\".\" = nama branch aktif saat ini)"
-    echo "  gfb -p --merge dev_sprint_7a dev_cfl/.    (langsung merge branch aktif tanpa ditanya)"
+  if (( ${#extra_args} )); then
+    echo "❌ Argumen berlebih: ${extra_args[*]}"
+    echo ""
+    _gfb_usage
     return 1
   fi
 
-  # Kalau pakai "." di nama branch, konfirmasi dulu sebelum bikin branch
-  if [ "$used_dot" = true ]; then
-    echo "🌿 Terdeteksi \".\" pada nama branch → branch baru akan dibuat sebagai: $branch_name"
-    read "confirm_dot?Lanjutkan buat branch '$branch_name'? (y/N): "
-    if [[ "$confirm_dot" != "y" && "$confirm_dot" != "Y" ]]; then
+  if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
+    echo "❌ Base branch dan nama branch baru wajib diisi."
+    echo ""
+    _gfb_usage
+    return 1
+  fi
+
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "❌ Bukan di dalam git repository."
+    return 1
+  fi
+
+  local current_branch
+  current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+  # "@" (atau "." cara lama) = branch aktif saat ini
+  local used_placeholder=false
+  if [[ "$base_branch" == "@" || "$base_branch" == "." ]]; then
+    [ "$base_branch" = "." ] && legacy_hints+=("base \".\" → \"@\"")
+    base_branch="$current_branch"
+    used_placeholder=true
+  fi
+
+  local placeholder_in_name=false
+  case $branch_name in
+    @|.)
+      [ "$branch_name" = "." ] && legacy_hints+=("\".\" → \"@\"")
+      branch_name="$current_branch"
+      placeholder_in_name=true
+      ;;
+    */@|*/.)
+      [[ "$branch_name" == */. ]] && legacy_hints+=("\"${branch_name}\" → \"${branch_name%.}@\"")
+      branch_name="${branch_name%?}$current_branch"
+      placeholder_in_name=true
+      ;;
+  esac
+  [ "$placeholder_in_name" = true ] && used_placeholder=true
+
+  # Tips kalau masih pakai cara lama (tetap dijalankan)
+  if (( ${#legacy_hints} )); then
+    echo "💡 Tips: kamu memakai cara lama. Cara baru:"
+    local h
+    for h in "${legacy_hints[@]}"; do echo "     $h"; done
+    local new_cmd="gfb -"
+    [ "$push_to_origin" = true ] && new_cmd+="p"
+    [ "$auto_merge" = true ] && new_cmd+="m"
+    [ "$assume_yes" = true ] && new_cmd+="y"
+    [ "$dry_run" = true ] && new_cmd+="n"
+    [ "$new_cmd" = "gfb -" ] && new_cmd="gfb"
+    echo "   Contoh: $new_cmd <base> <prefix>/@"
+    echo ""
+  fi
+
+  if [[ "$used_placeholder" = true && "$current_branch" = "HEAD" ]]; then
+    echo "❌ Sedang detached HEAD, placeholder @ tidak bisa dipakai."
+    return 1
+  fi
+
+  if [[ "$auto_merge" = true && "$placeholder_in_name" != true ]]; then
+    echo "❌ -m hanya bisa dipakai bersama placeholder @ di nama branch (mis. prefix/@)."
+    echo "   Tanpa @, tidak ada branch yang bisa di-merge."
+    return 1
+  fi
+
+  if ! git check-ref-format --branch "$branch_name" >/dev/null 2>&1; then
+    echo "❌ Nama branch tidak valid: $branch_name"
+    return 1
+  fi
+
+  if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+    echo "❌ Branch '$branch_name' sudah ada secara lokal."
+    return 1
+  fi
+
+  # Rencana
+  local merge_desc="tidak"
+  if [ "$placeholder_in_name" = true ]; then
+    if [ "$auto_merge" = true ]; then
+      merge_desc="$current_branch → $branch_name"
+    else
+      merge_desc="tidak (tambah -m untuk merge $current_branch)"
+    fi
+  fi
+  echo "📋 Rencana:"
+  echo "   base  : $base_branch (pull dari origin)"
+  echo "   baru  : $branch_name"
+  echo "   merge : $merge_desc"
+  echo "   push  : $([ "$push_to_origin" = true ] && echo ya || echo "tidak (tambah -p untuk push)")"
+
+  if [ "$dry_run" = true ]; then
+    echo "🧪 Dry-run, tidak ada yang dijalankan."
+    return 0
+  fi
+
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "❌ Ada uncommitted changes di '$current_branch'. Commit atau stash dulu."
+    return 1
+  fi
+
+  # Konfirmasi hanya kalau memakai placeholder (nama hasil turunan), kecuali -y
+  if [[ "$used_placeholder" = true && "$assume_yes" != true ]]; then
+    local confirm
+    read "confirm?Lanjut? [Y/n]: "
+    if [[ "$confirm" == [nN]* ]]; then
       echo "❌ Dibatalkan."
       return 1
     fi
   fi
 
   echo "🔄 Pulling newest $base_branch..."
-  git checkout "$base_branch" && git pull origin "$base_branch"
-
-  if [ $? -ne 0 ]; then
-    echo "⚠️ Gagal update $base_branch. Cek apakah ada uncommitted changes."
+  if ! { git checkout "$base_branch" && git pull origin "$base_branch"; }; then
+    echo "⚠️  Gagal update $base_branch."
     return 1
   fi
 
   echo "🌿 Membuat branch: $branch_name dari $base_branch"
-  git checkout -b "$branch_name"
+  if ! git checkout -b "$branch_name"; then
+    echo "❌ Gagal membuat branch $branch_name."
+    return 1
+  fi
 
-  # Kalau pakai ".", tawarkan (atau langsung, jika --merge) merge branch yang direferensikan "."
-  if [ "$used_dot" = true ]; then
-    if [ "$auto_merge" = true ]; then
-      echo "🔀 --merge aktif, langsung merge '$dot_source_branch' ke '$branch_name'..."
-      git merge "$dot_source_branch"
-      [ $? -ne 0 ] && echo "⚠️  Ada conflict saat merge. Selesaikan manual lalu commit."
-    else
-      read "merge_confirm?🔀 Merge branch '$dot_source_branch' ke branch baru '$branch_name'? (y/N): "
-      if [[ "$merge_confirm" == "y" || "$merge_confirm" == "Y" ]]; then
-        git merge "$dot_source_branch"
-        [ $? -ne 0 ] && echo "⚠️  Ada conflict saat merge. Selesaikan manual lalu commit."
-      else
-        echo "⏭️  Skip merge."
-      fi
+  if [ "$auto_merge" = true ]; then
+    echo "🔀 Merge '$current_branch' ke '$branch_name'..."
+    if ! git merge "$current_branch"; then
+      echo "⚠️  Ada conflict saat merge. Selesaikan manual lalu commit."
+      [ "$push_to_origin" = true ] && echo "   Push dibatalkan. Setelah selesai: git push -u origin $branch_name"
+      return 1
     fi
   fi
 
   if [ "$push_to_origin" = true ]; then
     echo "🚀 Push dan set upstream..."
-    git push -u origin "$branch_name"
+    if ! git push -u origin "$branch_name"; then
+      echo "❌ Push gagal. Coba lagi: git push -u origin $branch_name"
+      return 1
+    fi
     echo "✅ Berhasil dibuat dan di-push!"
   else
     echo "📍 Branch dibuat secara lokal."
     echo "Gunakan: git push -u origin $branch_name"
   fi
 }
+
+# Tab completion: base branch dari daftar branch lokal
+_gfb_branches() {
+  local -a branches
+  branches=(${(f)"$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)"})
+  _describe 'branch' branches
+}
+_gfb() {
+  _arguments -s \
+    '-p[push ke origin]' '-m[merge branch aktif]' '-y[tanpa konfirmasi]' \
+    '-n[dry-run]' '-h[bantuan]' \
+    '1:base branch:_gfb_branches' \
+    '2:nama branch baru:'
+}
+(( $+functions[compdef] )) && compdef _gfb gfb
 
 # Git Feature Branch Cleaner
 # Menghapus branch yang sudah merged ke base branch
@@ -616,6 +749,7 @@ gfbls() {
 #
 # Model Groq gratis:
 # openai/gpt-oss-120b  → default
+# qwen/qwen3.8-27b  → chat gpt bagus
 # llama-3.3-70b-versatile  → kualitas terbaik
 # llama3-8b-8192           → lebih cepat, ringan
 # gemma2-9b-it             → Google Gemma
@@ -833,6 +967,491 @@ except Exception as e:
     echo "$result" | pbcopy
     echo "✅ Sudah di-copy ke clipboard!"
   fi
+}
+
+# Git Feature Branch Commit Message Generator
+# Generate commit message dari perubahan saat ini via Groq atau Gemini (gaya GitHub Copilot):
+#   - ada yang di-stage   → hanya pakai perubahan staged
+#   - tidak ada yang stage → pakai changes (unstaged + file baru/untracked)
+# Requires: GROQ_API_KEY atau GEMINI_API_KEY di environment
+#
+# contoh:
+# gfbcm                              → groq, staged (atau changes kalau belum ada yang di-stage)
+# gfbcm -p gemini                    → pakai Gemini
+# gfbcm -p groq -m llama3-8b-8192    → groq, pilih model manual
+
+# Kirim prompt ke provider AI, cetak hasilnya. Return 1 kalau error.
+# _gfb_ai_generate <provider> <model> <prompt>
+_gfb_ai_generate() {
+  local provider="$1" model="$2" prompt="$3"
+  local json_payload response
+
+  if [ "$provider" = "groq" ]; then
+    json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'model': sys.argv[2],
+    'messages': [{'role': 'user', 'content': sys.argv[1]}],
+    'temperature': 0.2
+}))
+" "$prompt" "$model" 2>/dev/null)
+
+    response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+      -H "Authorization: Bearer $GROQ_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$json_payload")
+  else
+    json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'contents': [{'parts': [{'text': sys.argv[1]}]}],
+    'generationConfig': {'temperature': 0.2}
+}))
+" "$prompt" 2>/dev/null)
+
+    response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$json_payload")
+  fi
+
+  # Ambil teks hasil (hapus code fence kalau model membungkus pakai ```)
+  python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[2])
+except Exception:
+  print('❌ Response bukan JSON:', sys.argv[2][:300], file=sys.stderr); sys.exit(1)
+err = d.get('error')
+if err:
+  msg = err.get('message', err) if isinstance(err, dict) else err
+  print('❌ API error:', msg, file=sys.stderr); sys.exit(1)
+try:
+  if sys.argv[1] == 'groq':
+    text = d['choices'][0]['message']['content']
+  else:
+    text = d['candidates'][0]['content']['parts'][0]['text']
+except Exception as e:
+  print('❌ Parse error:', e, file=sys.stderr); sys.exit(1)
+lines = [l.rstrip() for l in text.strip().splitlines() if not l.strip().startswith('\`\`\`')]
+print('\n'.join(lines).strip())
+" "$provider" "$response"
+}
+
+gfbcm() {
+  local provider="groq"  # default provider
+  local model=""         # kosong = pakai default per provider
+  local max_diff_chars=12000
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -p|--provider) provider="$2"; shift ;;
+      -m|--model) model="$2"; shift ;;
+      -h|--help)
+        echo "Gunakan: gfbcm [-p provider] [-m model]"
+        echo "  Sumber: staged kalau ada, selain itu changes (unstaged + untracked)"
+        echo "  -p / --provider  → groq (default) atau gemini"
+        echo "  -m / --model     → pilih model manual"
+        return 0
+        ;;
+      *)
+        echo "❌ Argumen tidak dikenal: $1 (lihat: gfbcm -h)"
+        return 1
+        ;;
+    esac
+    shift
+  done
+
+  # Set default model per provider
+  if [ -z "$model" ]; then
+    case "$provider" in
+      groq)   model="openai/gpt-oss-120b" ;;
+      gemini) model="gemini-2.0-flash" ;;
+      *)
+        echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
+        return 1
+        ;;
+    esac
+  fi
+
+  # Validasi API key sesuai provider
+  if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
+    echo "❌ GROQ_API_KEY belum di-set."
+    echo "Daftar gratis di https://console.groq.com lalu:"
+    echo "  export GROQ_API_KEY=\"gsk_xxxxxx\""
+    return 1
+  fi
+  if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
+    echo "❌ GEMINI_API_KEY belum di-set."
+    echo "Daftar gratis di https://aistudio.google.com/apikey lalu:"
+    echo "  export GEMINI_API_KEY=\"AIza_xxxxxx\""
+    return 1
+  fi
+
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "❌ Bukan di dalam git repository."
+    return 1
+  fi
+
+  # Lock file & file minified tetap muncul di daftar file, tapi isi diff-nya di-skip
+  local -a noisy=(':(top,exclude)*.lock' ':(top,exclude)*package-lock.json' ':(top,exclude)*pnpm-lock.yaml'
+                  ':(top,exclude)*.min.js' ':(top,exclude)*.min.css')
+
+  # Selalu baca perubahan dari root repo, walau dipanggil dari subfolder
+  pushd -q "$(git rev-parse --show-toplevel)" || return 1
+
+  local source_label files diff
+  local -a untracked=()
+  if ! git diff --cached --quiet; then
+    source_label="staged"
+    files=$(git diff --cached --name-status)
+    diff=$(git diff --cached --no-color -- ":/" "${noisy[@]}")
+  else
+    source_label="changes (unstaged + untracked)"
+    untracked=(${(f)"$(git ls-files --others --exclude-standard)"})
+    files=$(git diff --name-status)
+    local f
+    for f in "${untracked[@]}"; do files+=$'\n'"A	$f (untracked)"; done
+    files=${files#$'\n'}
+    diff=$(git diff --no-color -- ":/" "${noisy[@]}")
+    # Isi file baru (hanya file teks, maksimal 80 baris per file)
+    for f in "${untracked[@]}"; do
+      [[ -f "$f" ]] && grep -Iq . "$f" 2>/dev/null || continue
+      diff+=$'\n'"--- /dev/null"$'\n'"+++ b/$f"$'\n'"$(head -n 80 "$f" | sed 's/^/+/')"
+    done
+  fi
+  popd -q
+
+  if [ -z "$files" ]; then
+    echo "✅ Tidak ada perubahan (staged maupun unstaged)."
+    return 0
+  fi
+
+  local truncated=false
+  if (( ${#diff} > max_diff_chars )); then
+    diff="${diff[1,$max_diff_chars]}"$'\n'"... (diff dipotong)"
+    truncated=true
+  fi
+
+  local branch=$(git rev-parse --abbrev-ref HEAD)
+  local recent_commits=$(git log -10 --pretty=format:%s 2>/dev/null)
+  local file_count=$(echo "$files" | wc -l | tr -d ' ')
+
+  echo ""
+  echo "🌿 Branch    : $branch"
+  echo "📂 Sumber    : $source_label"
+  echo "📋 Total file: $file_count$([ "$truncated" = true ] && echo " (diff dipotong ke $max_diff_chars karakter)")"
+  echo "🤖 Provider  : $provider ($model)"
+  echo ""
+  echo "⏳ Generating commit message..."
+  echo ""
+
+  # Buat prompt
+  local prompt="You are an assistant that writes git commit messages, like GitHub Copilot's commit message generator.
+Analyze the diff below and write ONE commit message describing these changes.
+Rules:
+- Use Conventional Commits: <type>(<optional scope>): <subject>. Types: feat, fix, refactor, chore, docs, test, style, perf, build, ci.
+- Subject line: imperative mood, lowercase after the colon, no trailing period, max 72 characters.
+- If the changes contain more than one meaningful change, add a blank line followed by a short body of bullet points (\"- ...\"), one per meaningful change, each max 72 characters.
+- If it is a single small change, output only the subject line.
+- Describe WHAT changed and WHY when it can be inferred; do not list every file.
+- Match the language and style of the recent commits if they are consistent.
+- Output ONLY the commit message. No explanation, no quotes, no code fences.
+
+Branch name (may contain a ticket ID or hint of intent): $branch
+
+Recent commits on this branch (for style reference):
+$recent_commits
+
+Changed files:
+$files
+
+Diff:
+$diff"
+
+  local result
+  result=$(_gfb_ai_generate "$provider" "$model" "$prompt") || return 1
+
+  echo "$result"
+  echo ""
+
+  # Tanya apakah mau copy ke clipboard
+  read "copy?📋 Copy ke clipboard? (y/N): "
+  if [[ "$copy" == "y" || "$copy" == "Y" ]]; then
+    printf '%s' "$result" | pbcopy
+    echo "✅ Sudah di-copy ke clipboard!"
+  fi
+}
+
+# Git Feature Branch Status
+# Seperti git status, tapi lebih lengkap:
+#   - branch, upstream (ahead/behind), posisi vs base branch, fetch terakhir
+#   - operasi yang sedang berjalan (merge/rebase/cherry-pick/revert/bisect)
+#   - staged / changes / untracked / conflict + jumlah baris (+/-)
+#   - stash, commit belum di-push / belum di-pull
+#   - saran langkah berikutnya
+#
+# contoh:
+# gfbstatus              → base otomatis (master, lalu main)
+# gfbstatus -b develop   → bandingkan dengan develop
+# gfbstatus -f           → git fetch dulu supaya ahead/behind akurat
+# gfbstatus -a           → tampilkan semua file (tanpa dipotong)
+
+# Ubah selisih detik jadi teks relatif, mis. "3 jam lalu"
+_gfb_ago() {
+  local s=$1
+  if   (( s < 60 ));    then echo "baru saja"
+  elif (( s < 3600 ));  then echo "$(( s / 60 )) menit lalu"
+  elif (( s < 86400 )); then echo "$(( s / 3600 )) jam lalu"
+  else                       echo "$(( s / 86400 )) hari lalu"
+  fi
+}
+
+# Cetak daftar file dari "git diff --name-status" + "--numstat" (urutannya sama)
+# _gfb_status_files <limit> <name-status> <numstat>
+_gfb_status_files() {
+  local limit=$1
+  local -a ns=(${(f)2}) nums=(${(f)3})
+  local i st file add del counts color
+  local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' D=$'\e[2m' N=$'\e[0m'
+
+  for (( i = 1; i <= ${#ns}; i++ )); do
+    if (( limit > 0 && i > limit )); then
+      echo "   ${D}… +$(( ${#ns} - limit )) file lainnya (pakai -a untuk semua)${N}"
+      break
+    fi
+    st=${ns[i]%%$'\t'*}
+    file=${ns[i]#*$'\t'}
+    file=${file//$'\t'/ → }
+    case ${st[1]} in
+      A) color=$G ;; D) color=$R ;; R|C) color=$C ;; *) color=$Y ;;
+    esac
+    add=${${nums[i]}%%$'\t'*}
+    del=${${nums[i]#*$'\t'}%%$'\t'*}
+    if [[ "$add" == "-" ]]; then
+      counts="${D}binary${N}"
+    else
+      counts=""
+      (( add > 0 )) && counts+="${G}+$add${N} "
+      (( del > 0 )) && counts+="${R}-$del${N}"
+    fi
+    printf "   %s%-2s%s %-55s %s\n" "$color" "${st[1]}" "$N" "$file" "$counts"
+  done
+}
+
+# Total +/- dari numstat, hasil: "+X -Y"
+_gfb_status_sum() {
+  echo "$1" | awk -F'\t' '$1 != "-" { a += $1; d += $2 } END { printf "+%d -%d", a, d }'
+}
+
+gfbstatus() {
+  local base_branch=""
+  local do_fetch=false
+  local limit=20
+
+  # Parsing argumen
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -b|--base) base_branch="$2"; shift ;;
+      -f|--fetch) do_fetch=true ;;
+      -a|--all) limit=0 ;;
+      -h|--help)
+        echo "Gunakan: gfbstatus [-b base-branch] [-f] [-a]"
+        echo "  -b / --base   → base branch pembanding (default: master, lalu main)"
+        echo "  -f / --fetch  → git fetch dulu supaya ahead/behind akurat"
+        echo "  -a / --all    → tampilkan semua file (default maks $limit per bagian)"
+        return 0
+        ;;
+      *)
+        echo "❌ Argumen tidak dikenal: $1 (lihat: gfbstatus -h)"
+        return 1
+        ;;
+    esac
+    shift
+  done
+
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "❌ Bukan di dalam git repository."
+    return 1
+  fi
+
+  local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' B=$'\e[1m' D=$'\e[2m' N=$'\e[0m'
+
+  # Selalu baca dari root repo, walau dipanggil dari subfolder
+  pushd -q "$(git rev-parse --show-toplevel)" || return 1
+
+  if [ "$do_fetch" = true ]; then
+    echo "🔄 Fetching..."
+    git fetch --quiet --prune || echo "⚠️  Fetch gagal, data remote mungkin tidak terbaru."
+  fi
+
+  local repo=${PWD:t}
+  local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  local upstream=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)
+  local -a hints=()
+
+  # ── Header: branch & upstream ─────────────────────────────
+  echo ""
+  if [ "$branch" = "HEAD" ]; then
+    echo "📍 ${B}$repo${N}  •  ${R}detached HEAD${N} di $(git rev-parse --short HEAD)"
+    hints+=("Detached HEAD → buat branch: git switch -c <nama-branch>")
+  elif [ -n "$upstream" ]; then
+    local lr=(${=$(git rev-list --left-right --count "$upstream"...HEAD 2>/dev/null)})
+    local behind=${lr[1]:-0} ahead=${lr[2]:-0}
+    local sync="${G}✓ sinkron${N}"
+    (( ahead > 0 || behind > 0 )) && sync="${G}↑$ahead${N} ${R}↓$behind${N}"
+    echo "📍 ${B}$repo${N}  •  🌿 ${B}$branch${N} → $upstream  $sync"
+  else
+    echo "📍 ${B}$repo${N}  •  🌿 ${B}$branch${N}  ${Y}(belum ada upstream)${N}"
+    hints+=("Belum ada upstream → git push -u origin $branch")
+  fi
+
+  if git rev-parse --verify -q HEAD >/dev/null; then
+    echo "   HEAD  : $(git log -1 --format="${Y}%h${N} %s ${D}(%cr, %an)${N}")"
+  else
+    echo "   HEAD  : ${D}belum ada commit${N}"
+  fi
+
+  # Posisi vs base branch (pakai origin/<base> kalau ada, lebih up to date)
+  if [ -z "$base_branch" ]; then
+    local cand
+    for cand in master main; do
+      if git rev-parse --verify -q "$cand" >/dev/null || git rev-parse --verify -q "origin/$cand" >/dev/null; then
+        base_branch=$cand; break
+      fi
+    done
+  fi
+  if [[ -n "$base_branch" && "$branch" != "$base_branch" ]]; then
+    local base_ref=$base_branch
+    git rev-parse --verify -q "origin/$base_branch" >/dev/null && base_ref="origin/$base_branch"
+    local blr=(${=$(git rev-list --left-right --count "$base_ref"...HEAD 2>/dev/null)})
+    if (( ${#blr} == 2 )); then
+      echo "   Base  : $base_ref → ${G}$blr[2] commit di depan${N}, ${R}$blr[1] di belakang${N}"
+      (( blr[1] > 0 )) && hints+=("Tertinggal $blr[1] commit dari $base_ref → git merge $base_ref (atau rebase)")
+    fi
+  fi
+
+  local fetch_head=$(git rev-parse --git-path FETCH_HEAD)
+  if [ -f "$fetch_head" ]; then
+    local since=$(( $(date +%s) - $(stat -f %m "$fetch_head") ))
+    echo "   Fetch : $(_gfb_ago $since)"
+    (( since > 86400 )) && hints+=("Fetch terakhir sudah lama → gfbstatus -f")
+  else
+    echo "   Fetch : ${D}belum pernah${N}"
+  fi
+
+  # ── Operasi yang sedang berjalan ──────────────────────────
+  local op=""
+  if   [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+    op="REBASE";      hints+=("Rebase berjalan → git rebase --continue / --abort")
+  elif [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+    op="MERGE";       hints+=("Merge berjalan → selesaikan lalu git commit, atau git merge --abort")
+  elif [ -f "$(git rev-parse --git-path CHERRY_PICK_HEAD)" ]; then
+    op="CHERRY-PICK"; hints+=("Cherry-pick berjalan → git cherry-pick --continue / --abort")
+  elif [ -f "$(git rev-parse --git-path REVERT_HEAD)" ]; then
+    op="REVERT";      hints+=("Revert berjalan → git revert --continue / --abort")
+  elif [ -f "$(git rev-parse --git-path BISECT_LOG)" ]; then
+    op="BISECT";      hints+=("Bisect berjalan → git bisect reset kalau sudah selesai")
+  fi
+  [ -n "$op" ] && echo "" && echo "⚠️  ${R}${B}Sedang $op${N}"
+
+  # ── File ─────────────────────────────────────────────────
+  local conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null)
+  # File conflict hanya ditampilkan di bagian Conflict, bukan di Staged/Changes
+  local -a skip=(":/")
+  local cfile
+  for cfile in ${(f)conflicts}; do skip+=(":(top,literal,exclude)$cfile"); done
+  local staged_ns=$(git diff --cached --name-status -M --diff-filter=ACDMRTX -- "${skip[@]}" 2>/dev/null)
+  local staged_num=$(git diff --cached --numstat -M --diff-filter=ACDMRTX -- "${skip[@]}" 2>/dev/null)
+  local changes_ns=$(git diff --name-status --diff-filter=ACDMRTX -- "${skip[@]}" 2>/dev/null)
+  local changes_num=$(git diff --numstat --diff-filter=ACDMRTX -- "${skip[@]}" 2>/dev/null)
+  local untracked=$(git ls-files --others --exclude-standard)
+
+  if [ -n "$conflicts" ]; then
+    local -a cf=(${(f)conflicts})
+    echo ""
+    echo "⚔️  ${R}${B}Conflict (${#cf} file)${N}"
+    printf "   ${R}U${N}  %s\n" "${cf[@]}"
+    hints+=("Selesaikan conflict → edit file, lalu git add <file>")
+  fi
+
+  echo ""
+  if [ -n "$staged_ns" ]; then
+    local -a sl=(${(f)staged_ns})
+    echo "✅ ${G}${B}Staged (${#sl} file, $(_gfb_status_sum "$staged_num"))${N}  ${D}→ akan masuk commit${N}"
+    _gfb_status_files $limit "$staged_ns" "$staged_num"
+    hints+=("Ada yang di-stage → gfbcm untuk generate commit message")
+  else
+    echo "✅ ${D}Staged: kosong${N}"
+  fi
+
+  echo ""
+  if [ -n "$changes_ns" ]; then
+    local -a cl=(${(f)changes_ns})
+    echo "✏️  ${Y}${B}Changes (${#cl} file, $(_gfb_status_sum "$changes_num"))${N}  ${D}→ belum di-stage${N}"
+    _gfb_status_files $limit "$changes_ns" "$changes_num"
+  else
+    echo "✏️  ${D}Changes: kosong${N}"
+  fi
+
+  if [ -n "$untracked" ]; then
+    local -a ul=(${(f)untracked})
+    echo ""
+    echo "❓ ${C}${B}Untracked (${#ul} file)${N}  ${D}→ file baru, belum di-track${N}"
+    local i
+    for (( i = 1; i <= ${#ul}; i++ )); do
+      if (( limit > 0 && i > limit )); then
+        echo "   ${D}… +$(( ${#ul} - limit )) file lainnya (pakai -a untuk semua)${N}"
+        break
+      fi
+      echo "   ${C}?${N}  ${ul[i]}"
+    done
+  fi
+
+  if [[ -z "$staged_ns" && ( -n "$changes_ns" || -n "$untracked" ) ]]; then
+    hints+=("Belum ada yang di-stage → git add <file> (atau git add -p untuk sebagian)")
+  fi
+
+  # ── Stash ────────────────────────────────────────────────
+  local stash_count=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+  if (( stash_count > 0 )); then
+    echo ""
+    echo "📦 ${B}Stash ($stash_count)${N}  ${D}terakhir: $(git stash list -1 --format='%gs (%cr)')${N}"
+  fi
+
+  # ── Commit belum di-push / belum di-pull ─────────────────
+  if [ -n "$upstream" ]; then
+    local unpushed=$(git log --format="${Y}%h${N} %s ${D}(%cr)${N}" "$upstream"..HEAD 2>/dev/null)
+    local unpulled=$(git log --format="${Y}%h${N} %s ${D}(%cr, %an)${N}" HEAD.."$upstream" 2>/dev/null)
+    if [ -n "$unpushed" ]; then
+      local -a up=(${(f)unpushed})
+      echo ""
+      echo "⬆️  ${G}${B}Belum di-push (${#up} commit)${N}"
+      printf "   %s\n" "${up[1,10]}"
+      (( ${#up} > 10 )) && echo "   ${D}… +$(( ${#up} - 10 )) commit lainnya${N}"
+      hints+=("Ada commit belum di-push → git push")
+    fi
+    if [ -n "$unpulled" ]; then
+      local -a dn=(${(f)unpulled})
+      echo ""
+      echo "⬇️  ${R}${B}Belum di-pull (${#dn} commit)${N}"
+      printf "   %s\n" "${dn[1,10]}"
+      (( ${#dn} > 10 )) && echo "   ${D}… +$(( ${#dn} - 10 )) commit lainnya${N}"
+      hints+=("Ada commit baru di remote → git pull")
+    fi
+  fi
+
+  popd -q
+
+  # ── Saran ────────────────────────────────────────────────
+  echo ""
+  if (( ${#hints} )); then
+    echo "💡 ${B}Langkah berikut:${N}"
+    printf "   • %s\n" "${hints[@]}"
+  else
+    echo "✨ ${G}Bersih & sinkron, tidak ada yang perlu dilakukan.${N}"
+  fi
+  echo ""
 }
 
 # Git Feature Branch Lark Link
@@ -1670,6 +2289,31 @@ gfbmain() {
   echo "  Setup   :"
   echo "    export GROQ_API_KEY=\"gsk_xxxxxx\"      → https://console.groq.com"
   echo "    export GEMINI_API_KEY=\"AIza_xxxxxx\"   → https://aistudio.google.com/apikey"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbcm — Generate commit message via AI (gaya GitHub Copilot)"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbcm [-p provider] [-m model]"
+  echo "  Sumber  : staged kalau ada; selain itu changes (unstaged + untracked)"
+  echo "  Opsi    : -p / --provider  → groq (default) atau gemini"
+  echo "            -m / --model     → pilih model manual"
+  echo "  Contoh  :"
+  echo "    gfbcm                                 → groq"
+  echo "    gfbcm -p gemini                       → pakai Gemini"
+  echo "  Tips    : git add sebagian file dulu kalau ingin message hanya untuk file itu"
+  echo ""
+
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  gfbstatus — git status versi lengkap"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "  Usage   : gfbstatus [-b base-branch] [-f] [-a]"
+  echo "  Isi     : branch & upstream (↑↓), posisi vs base, fetch terakhir,"
+  echo "            merge/rebase berjalan, conflict, staged, changes, untracked,"
+  echo "            stash, commit belum push/pull, saran langkah berikut"
+  echo "  Opsi    : -b / --base   → base pembanding (default: master, lalu main)"
+  echo "            -f / --fetch  → git fetch dulu supaya ↑↓ akurat"
+  echo "            -a / --all    → tampilkan semua file (default maks 20/bagian)"
   echo ""
 
   echo "──────────────────────────────────────────────────────────────"
