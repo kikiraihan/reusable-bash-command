@@ -9,7 +9,7 @@
 #   --daily             Langsung generate Daily Standup Report pakai AI
 #   --weekly            Langsung generate Weekly Progress Report pakai AI (2 tahap)
 #   -p, --provider X    AI provider: groq (default) / gemini
-#   -m, --model X       Model AI (default: qwen/qwen3-32b untuk groq,
+#   -m, --model X       Model AI (default: qwen/qwen3.8-27b untuk groq,
 #                       gemini-2.0-flash untuk gemini)
 #   -h, --help          Tampilkan bantuan ini
 #
@@ -79,6 +79,49 @@ validate_date() {
     fi
 }
 
+# --- Last input memory ------------------------------------------------------
+
+# Input terakhir tiap prompt disimpan di file ini (format key=value).
+# Saat prompt muncul, tekan Tab untuk mengisi input terakhir, lalu masih
+# bisa diedit sebelum Enter.
+LAST_INPUT_FILE="$HOME/.my_commits_last_input"
+
+# Readline di script non-interaktif baru aktif setelah emacs mode di-set
+[ -t 0 ] && set -o emacs
+
+get_last_input() {
+    [ -f "$LAST_INPUT_FILE" ] || return 0
+    grep -m1 "^$1=" "$LAST_INPUT_FILE" | cut -d= -f2-
+}
+
+save_last_input() {
+    local key="$1" value="$2" tmp
+    [ -z "$value" ] && return 0
+    tmp="$(mktemp "${TMPDIR:-/tmp}/my_commits_last_XXXXXX")"
+    [ -f "$LAST_INPUT_FILE" ] && grep -v "^$key=" "$LAST_INPUT_FILE" > "$tmp"
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$LAST_INPUT_FILE"
+}
+
+# read_with_last VAR KEY PROMPT
+# Prompt tanpa ": " di akhir, nanti ditambah hint "[Tab: <last>]: ".
+# Tab di-bind sebagai macro readline yang mengetik input terakhir.
+read_with_last() {
+    local var="$1" key="$2" prompt="$3" last esc input
+    last="$(get_last_input "$key")"
+    if [ -n "$last" ]; then
+        esc="${last//\\/\\\\}"
+        esc="${esc//\"/\\\"}"
+        bind "\"\\t\":\"$esc\"" 2>/dev/null
+        prompt="$prompt [Tab: $last]: "
+    else
+        bind '"\t":""' 2>/dev/null
+        prompt="$prompt: "
+    fi
+    read -e -p "$prompt" input
+    printf -v "$var" '%s' "$input"
+}
+
 # --- Clipboard & AI helpers -------------------------------------------------
 
 # Copy ke clipboard, portable (macOS / Wayland / X11 / WSL)
@@ -103,7 +146,8 @@ copy_to_clipboard() {
 ask_copy() {
     local content="$1"
     local copy_ans
-    read -p "📋 Copy result ke clipboard? (y/N): " copy_ans
+    read_with_last copy_ans copy "📋 Copy result ke clipboard? (y/N)"
+    save_last_input copy "$copy_ans"
     if [[ "$copy_ans" == "y" || "$copy_ans" == "Y" ]]; then
         if copy_to_clipboard "$content"; then
             echo "✅ Sudah di-copy ke clipboard!"
@@ -116,7 +160,7 @@ ask_copy() {
 # Validasi provider, model default, API key, dan dependency untuk mode AI
 prepare_ai() {
     case "$AI_PROVIDER" in
-        groq)   [ -z "$AI_MODEL" ] && AI_MODEL="qwen/qwen3-32b" ;;
+        groq)   [ -z "$AI_MODEL" ] && AI_MODEL="qwen/qwen3.8-27b" ;;
         gemini) [ -z "$AI_MODEL" ] && AI_MODEL="gemini-2.0-flash" ;;
         *)
             echo "❌ Provider tidak dikenal: '$AI_PROVIDER'. Pilih: groq / gemini"
@@ -394,9 +438,10 @@ $report"
 CURRENT_DATE=$(date +%Y-%m-%d)
 
 while true; do
-    read -p "Enter start date (YYYY-MM-DD) [$CURRENT_DATE]: " FROM_DATE
+    read_with_last FROM_DATE from_date "Enter start date (YYYY-MM-DD) [$CURRENT_DATE]"
     FROM_DATE=${FROM_DATE:-$CURRENT_DATE}
     if validate_date "$FROM_DATE"; then
+        save_last_input from_date "$FROM_DATE"
         break
     else
         echo "Invalid date format. Please use YYYY-MM-DD"
@@ -404,9 +449,10 @@ while true; do
 done
 
 while true; do
-    read -p "Enter end date (YYYY-MM-DD) [$CURRENT_DATE]: " TO_DATE
+    read_with_last TO_DATE to_date "Enter end date (YYYY-MM-DD) [$CURRENT_DATE]"
     TO_DATE=${TO_DATE:-$CURRENT_DATE}
     if validate_date "$TO_DATE"; then
+        save_last_input to_date "$TO_DATE"
         break
     else
         echo "Invalid date format. Please use YYYY-MM-DD"
@@ -446,7 +492,8 @@ done
 
 echo ""
 echo "Select folders (comma-separated numbers, or 'all' for all folders):"
-read -p "Selection: " SELECTION
+read_with_last SELECTION folder_selection "Selection"
+save_last_input folder_selection "$SELECTION"
 
 # Parse selection
 SELECTED_FOLDERS=()
@@ -538,7 +585,8 @@ else
     echo "Select branches (comma-separated numbers, 'all', or type a name manually):"
     echo "  Wildcards supported: *kiki* (contains), kiki* (starts with), *kiki (ends with)"
     echo "  You can also include general branches: e.g. *kiki*, master, main, develop, staging"
-    read -p "Selection: " BRANCH_SELECTION
+    read_with_last BRANCH_SELECTION branch_selection "Selection"
+    save_last_input branch_selection "$BRANCH_SELECTION"
 
     if [ "$BRANCH_SELECTION" = "all" ]; then
         SELECTED_PAIRS=("${OPTION_PAIRS[@]}")
@@ -772,7 +820,8 @@ if [ -z "$OUTPUT_MODE" ]; then
     echo "  [3] Generate Weekly Progress Report (AI)"
     echo "  [4] Simpan ke file"
     echo ""
-    read -p "Selection [1]: " MODE_SELECTION
+    read_with_last MODE_SELECTION mode_selection "Selection [1]"
+    save_last_input mode_selection "${MODE_SELECTION:-1}"
     case "${MODE_SELECTION:-1}" in
         1) OUTPUT_MODE="show" ;;
         2) OUTPUT_MODE="daily" ;;
