@@ -82,12 +82,14 @@ validate_date() {
 # --- Last input memory ------------------------------------------------------
 
 # Input terakhir tiap prompt disimpan di file ini (format key=value).
-# Saat prompt muncul, tekan Tab untuk mengisi input terakhir, lalu masih
-# bisa diedit sebelum Enter.
+# Saat input kosong, input terakhir tampil sebagai teks abu-abu (ghost).
+# Tab / → untuk memakainya, atau langsung ketik untuk mengabaikannya.
 LAST_INPUT_FILE="$HOME/.my_commits_last_input"
 
-# Readline di script non-interaktif baru aktif setelah emacs mode di-set
-[ -t 0 ] && set -o emacs
+C_PROMPT=$'\033[1;36m'  # cyan tebal
+C_GHOST=$'\033[90m'     # abu-abu
+C_DIM=$'\033[2m'
+C_RESET=$'\033[0m'
 
 get_last_input() {
     [ -f "$LAST_INPUT_FILE" ] || return 0
@@ -104,22 +106,76 @@ save_last_input() {
 }
 
 # read_with_last VAR KEY PROMPT
-# Prompt tanpa ": " di akhir, nanti ditambah hint "[Tab: <last>]: ".
-# Tab di-bind sebagai macro readline yang mengetik input terakhir.
+# Prompt tanpa ": " di akhir. Line editor kecil ala fish autosuggestion:
+# - input kosong  → input terakhir tampil abu-abu di belakang kursor
+# - Tab / →       → terima suggestion, lalu masih bisa diedit
+# - ketik apa saja → suggestion diabaikan; hapus sampai kosong → muncul lagi
+# Key lain: ← → Home End Backspace Delete, Ctrl-A/E/U/W.
 read_with_last() {
-    local var="$1" key="$2" prompt="$3" last esc input
+    local var="$1" key="$2" last buf="" pos=0 k c seq prompt
+    prompt="${C_PROMPT}?${C_RESET} $3: "
     last="$(get_last_input "$key")"
-    if [ -n "$last" ]; then
-        esc="${last//\\/\\\\}"
-        esc="${esc//\"/\\\"}"
-        bind "\"\\t\":\"$esc\"" 2>/dev/null
-        prompt="$prompt [Tab: $last]: "
-    else
-        bind '"\t":""' 2>/dev/null
-        prompt="$prompt: "
+
+    # Bukan terminal (pipe/redirect): baca biasa
+    if [ ! -t 0 ]; then
+        IFS= read -r buf
+        printf -v "$var" '%s' "$buf"
+        return
     fi
-    read -e -p "$prompt" input
-    printf -v "$var" '%s' "$input"
+
+    while true; do
+        printf '\r\033[K%s%s' "$prompt" "$buf"
+        if [ -z "$buf" ] && [ -n "$last" ]; then
+            # Simpan posisi kursor, tulis ghost, balikkan kursor
+            printf '\0337%s%s  %s⇥ Tab%s\0338' "$C_GHOST" "$last" "$C_DIM" "$C_RESET"
+        elif (( pos < ${#buf} )); then
+            printf '\033[%dD' $(( ${#buf} - pos ))
+        fi
+
+        IFS= read -rsn1 k || break
+        case "$k" in
+            '')                         # Enter
+                break ;;
+            $'\t')
+                if [ -z "$buf" ] && [ -n "$last" ]; then buf="$last"; pos=${#buf}; fi ;;
+            $'\x7f'|$'\b')              # Backspace
+                if (( pos > 0 )); then buf="${buf:0:pos-1}${buf:pos}"; pos=$((pos - 1)); fi ;;
+            $'\x01') pos=0 ;;           # Ctrl-A
+            $'\x05') pos=${#buf} ;;     # Ctrl-E
+            $'\x15') buf="${buf:pos}"; pos=0 ;;  # Ctrl-U
+            $'\x17')                    # Ctrl-W: hapus kata sebelum kursor
+                c="${buf:0:pos}"
+                c="${c%"${c##*[! ]}"}"
+                c="${c%"${c##*[ ]}"}"
+                buf="$c${buf:pos}"; pos=${#c} ;;
+            $'\e')                      # Escape sequence (arrow, home, end, del)
+                seq=""
+                IFS= read -rsn1 -t 1 c
+                if [[ "$c" == "[" || "$c" == "O" ]]; then
+                    while IFS= read -rsn1 -t 1 c; do
+                        seq="$seq$c"
+                        [[ "$c" =~ [A-Za-z~] ]] && break
+                    done
+                fi
+                case "$seq" in
+                    C)                  # →
+                        if [ -z "$buf" ] && [ -n "$last" ]; then buf="$last"; pos=${#buf}
+                        elif (( pos < ${#buf} )); then pos=$((pos + 1)); fi ;;
+                    D) (( pos > 0 )) && pos=$((pos - 1)) ;;  # ←
+                    H|1~|7~) pos=0 ;;
+                    F|4~|8~) pos=${#buf} ;;
+                    3~) buf="${buf:0:pos}${buf:pos+1}" ;;     # Delete
+                esac ;;
+            *)
+                if [[ "$k" != [[:cntrl:]] ]]; then
+                    buf="${buf:0:pos}$k${buf:pos}"; pos=$((pos + 1))
+                fi ;;
+        esac
+    done
+
+    # Gambar ulang tanpa ghost, lalu pindah baris
+    printf '\r\033[K%s%s\n' "$prompt" "$buf"
+    printf -v "$var" '%s' "$buf"
 }
 
 # --- Clipboard & AI helpers -------------------------------------------------
