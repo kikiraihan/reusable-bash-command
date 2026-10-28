@@ -10,8 +10,8 @@ export GEMINI_API_KEY="***"
 
 # ════════════════════════════════════════════════════════════════════
 # GFB — Git Feature Branch Toolkit
-#   gfbmain          → ringkasan semua perintah
-#   <perintah> -h    → bantuan detail tiap perintah
+#   gfbmain             → ringkasan semua perintah
+#   gfbmain help <cmd>  → bantuan detail (sama dengan <cmd> -h)
 #   @ (atau ".")     → nama branch aktif saat ini
 # ════════════════════════════════════════════════════════════════════
 
@@ -43,6 +43,7 @@ _gfb_ok()     { local B D N G R Y C M; _gfb_pal; print -r -- "  ${G}✔${N} $*";
 _gfb_warn()   { local B D N G R Y C M; _gfb_pal; print -r -- "  ${Y}▲${N} $*"; }
 _gfb_err()    { local B D N G R Y C M; _gfb_pal; print -r -- "  ${R}✖${N} $*" >&2; }
 _gfb_info()   { local B D N G R Y C M; _gfb_pal; print -r -- "  ${C}ℹ${N} $*"; }
+_gfb_text()   { print -r -- "    $*"; }
 _gfb_note()   { local B D N G R Y C M; _gfb_pal; print -r -- "    ${D}$*${N}"; }
 _gfb_item()   { local B D N G R Y C M; _gfb_pal; printf "    ${D}%3s${N}  %s\n" "$1" "$2"; }
 _gfb_bullet() { local B D N G R Y C M; _gfb_pal; print -r -- "    ${D}•${N} $*"; }
@@ -235,8 +236,15 @@ print('\n'.join(lines).strip())
 # ════════════════════════════════════════════════════════════════════
 _gfb_usage() {
   _gfb_head "gfb" "buat branch baru dari base branch"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Membuat branch baru dari base branch yang sudah di-pull terbaru."
+  _gfb_text "Bisa sekaligus merge branch aktif ke branch baru (mis. branch fix-conflict"
+  _gfb_text "per sprint) dan push ke origin. Kalau branch sudah ada, ditawarkan replace."
   _gfb_sec "Pemakaian"
   _gfb_use "gfb [-p] [-m] [-y] [-n] <base-branch> <nama-branch-baru>"
+  _gfb_sec "Argumen"
+  _gfb_opt "<base-branch>" "branch asal, di-pull dulu dari origin (@ = branch aktif)"
+  _gfb_opt "<nama-branch-baru>" "nama branch baru; prefix/@ → prefix/<branch-aktif>"
   _gfb_sec "Opsi"
   _gfb_opt "-p" "push ke origin + set upstream"
   _gfb_opt "-m" "merge branch aktif ke branch baru (wajib pakai @ di nama)"
@@ -507,8 +515,13 @@ _gfb() {
 # ════════════════════════════════════════════════════════════════════
 _gfbclean_usage() {
   _gfb_head "gfbclean" "hapus branch yang sudah merged ke base"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Bersih-bersih branch lama: cari branch yang sudah merged ke base,"
+  _gfb_text "pilih mana yang mau dihapus, lalu hapus di lokal dan origin sekaligus."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbclean <base-branch> [-f keyword]"
+  _gfb_sec "Argumen"
+  _gfb_opt "<base-branch>" "branch tujuan merge yang dicek (@ = branch aktif)"
   _gfb_sec "Opsi"
   _gfb_opt "-f, --filter" "hanya branch yang mengandung keyword"
   _gfb_opt "-h, --help" "bantuan ini"
@@ -655,8 +668,13 @@ gfbclean() {
 # ════════════════════════════════════════════════════════════════════
 _gfbcheck_usage() {
   _gfb_head "gfbcheck" "branch yang belum merged ke base"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Lihat branch mana saja yang BELUM masuk ke base, beserta jumlah commit"
+  _gfb_text "yang belum merged — berguna sebelum rilis atau sebelum bersih-bersih."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbcheck <base-branch> [-f keyword]"
+  _gfb_sec "Argumen"
+  _gfb_opt "<base-branch>" "branch pembanding (@ = branch aktif)"
   _gfb_sec "Opsi"
   _gfb_opt "-f, --filter" "hanya branch yang mengandung keyword"
   _gfb_opt "-h, --help" "bantuan ini"
@@ -727,9 +745,15 @@ gfbcheck() {
 # ════════════════════════════════════════════════════════════════════
 _gfblog_usage() {
   _gfb_head "gfblog" "commit yang belum ada di base"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Lihat commit di branch kamu yang belum ada di base,"
+  _gfb_text "mis. untuk cek isi PR sebelum dibuat."
   _gfb_sec "Pemakaian"
   _gfb_use "gfblog [base-branch] [target-branch]"
   _gfb_note "default: base = master, target = branch aktif (@)"
+  _gfb_sec "Argumen"
+  _gfb_opt "[base-branch]" "pembanding, default master"
+  _gfb_opt "[target-branch]" "branch yang dicek, default branch aktif (@)"
   _gfb_sec "Contoh"
   _gfb_ex "gfblog master" "master vs branch aktif"
   _gfb_ex "gfblog master feature/login" "master vs feature/login"
@@ -778,8 +802,13 @@ gfblog() {
 # ════════════════════════════════════════════════════════════════════
 _gfbfind_usage() {
   _gfb_head "gfbfind" "cari commit ada di branch mana saja"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Cari tahu sebuah commit sudah masuk ke branch mana saja,"
+  _gfb_text "mis. untuk cek apakah sebuah fix sudah ada di develop / master."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbfind <commit-hash> [-r] [-f keyword]"
+  _gfb_sec "Argumen"
+  _gfb_opt "<commit-hash>" "short atau full hash"
   _gfb_sec "Opsi"
   _gfb_opt "-r, --remote" "termasuk remote branch"
   _gfb_opt "-f, --filter" "filter nama branch"
@@ -855,8 +884,13 @@ gfbfind() {
 # ════════════════════════════════════════════════════════════════════
 _gfbls_usage() {
   _gfb_head "gfbls" "daftar branch, urut terakhir dipakai"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Daftar branch diurutkan dari yang terakhir dipakai (checkout/commit),"
+  _gfb_text "lengkap dengan status sinkron ke origin dan kapan terakhir dipakai."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbls [keyword] [-r]"
+  _gfb_sec "Argumen"
+  _gfb_opt "[keyword]" "bagian nama branch; kosong = semua branch"
   _gfb_sec "Opsi"
   _gfb_opt "-r, --remote" "termasuk remote branch"
   _gfb_opt "-h, --help" "bantuan ini"
@@ -1026,10 +1060,16 @@ gfbls() {
 # ════════════════════════════════════════════════════════════════════
 _gfbpr_usage() {
   _gfb_head "gfbpr" "generate judul & deskripsi PR via AI"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Generate judul & deskripsi PR (Summary, Changes, Impact, Testing)"
+  _gfb_text "dari daftar commit branch kamu memakai AI, lalu bisa di-copy ke clipboard."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbpr [base-branch] [target-branch] [-p provider] [-m model]"
   _gfb_note "default: base = master, target = branch aktif, provider = groq"
   _gfb_note "base dikenali dari nama master / main / develop, sisanya dianggap target"
+  _gfb_sec "Argumen"
+  _gfb_opt "[base-branch]" "master / main / develop, default master"
+  _gfb_opt "[target-branch]" "default branch aktif (@)"
   _gfb_sec "Opsi"
   _gfb_opt "-p, --provider" "groq (default) atau gemini"
   _gfb_opt "-m, --model" "pilih model manual"
@@ -1162,6 +1202,9 @@ $commits"
 # ════════════════════════════════════════════════════════════════════
 _gfbcm_usage() {
   _gfb_head "gfbcm" "generate commit message via AI"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Generate commit message gaya Conventional Commits dari perubahan"
+  _gfb_text "yang sedang dikerjakan memakai AI, lalu bisa di-copy ke clipboard."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbcm [-p provider] [-m model]"
   _gfb_note "sumber: staged kalau ada, selain itu changes (unstaged + untracked)"
@@ -1459,6 +1502,10 @@ ${stashes:-none}"
 
 _gfbstatus_usage() {
   _gfb_head "gfbstatus" "git status versi lengkap"
+  _gfb_sec "Untuk apa"
+  _gfb_text "git status versi lengkap: posisi branch vs upstream & base, file"
+  _gfb_text "staged/changes/untracked, peringatan file sensitif/besar, stash,"
+  _gfb_text "commit belum push/pull, dan saran langkah berikutnya."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbstatus [-b base] [-f] [-a] [-w [detik]] [-r [-p provider] [-m model]]"
   _gfb_sec "Opsi"
@@ -1769,9 +1816,14 @@ gfbstatus() {
 # ════════════════════════════════════════════════════════════════════
 _gfblarklink_usage() {
   _gfb_head "gfblarklink" "link Lark (Story & Issue) dari nama branch"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Buat link ticket Lark (Story & Issue) dari ID yang ada di nama branch,"
+  _gfb_text "lalu bisa di-copy ke clipboard."
   _gfb_sec "Pemakaian"
   _gfb_use "gfblarklink [branch] [-i id] [-p provider] [-m model]"
   _gfb_note "default: branch aktif, provider groq"
+  _gfb_sec "Argumen"
+  _gfb_opt "[branch]" "nama branch sumber ID, default branch aktif (@)"
   _gfb_sec "Opsi"
   _gfb_opt "-i, --id" "pakai ID manual, skip deteksi"
   _gfb_opt "-p, --provider" "groq (default) atau gemini, untuk deteksi ID"
@@ -1883,9 +1935,15 @@ Branch name: $branch_name"
 # ════════════════════════════════════════════════════════════════════
 _gfbconflict_usage() {
   _gfb_head "gfbconflict" "cek conflict tanpa merge sungguhan"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Cek apakah beberapa branch akan conflict kalau di-merge ke base, tanpa"
+  _gfb_text "benar-benar merge. Aman: dicoba di branch sementara lalu dibatalkan."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbconflict <base-branch> <branch1> [branch2 ...]"
   _gfb_note "tiap branch dicoba merge ke base (di branch sementara), lalu dibatalkan"
+  _gfb_sec "Argumen"
+  _gfb_opt "<base-branch>" "branch tujuan merge, di-pull dulu (@ = branch aktif)"
+  _gfb_opt "<branch...>" "satu atau lebih branch yang dicek"
   _gfb_sec "Contoh"
   _gfb_ex "gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
   _gfb_ex "gfbconflict dev_sprint_9a @" "branch aktif vs dev_sprint_9a"
@@ -1980,9 +2038,14 @@ gfbconflict() {
 # ════════════════════════════════════════════════════════════════════
 _gfbdel_usage() {
   _gfb_head "gfbdel" "hapus branch lokal + origin"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Hapus satu branch di lokal dan origin sekaligus,"
+  _gfb_text "pilih dari daftar atau langsung sebut namanya."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbdel [branch] [-f keyword] [-lo | -ro]"
   _gfb_note "tanpa branch → pilih dari daftar"
+  _gfb_sec "Argumen"
+  _gfb_opt "[branch]" "branch yang dihapus; kosong = pilih dari daftar"
   _gfb_sec "Opsi"
   _gfb_opt "-f, --filter" "filter daftar branch"
   _gfb_opt "-lo, --local-only" "hapus lokal saja"
@@ -2141,9 +2204,15 @@ _gfbdel_execute() {
 # ════════════════════════════════════════════════════════════════════
 _gfbrange_usage() {
   _gfb_head "gfbrange" "commit & file berubah antar dua hash"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Lihat commit dan file yang berubah di antara dua commit,"
+  _gfb_text "mis. untuk cek isi deploy dari versi A ke versi B."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbrange <hash-lama> <hash-baru> [-f keyword]"
   _gfb_note "urutan terbalik otomatis dibetulkan"
+  _gfb_sec "Argumen"
+  _gfb_opt "<hash-lama>" "commit awal (tidak ikut dihitung)"
+  _gfb_opt "<hash-baru>" "commit akhir"
   _gfb_sec "Opsi"
   _gfb_opt "-f, --filter" "filter path file"
   _gfb_opt "-h, --help" "bantuan ini"
@@ -2234,8 +2303,14 @@ gfbrange() {
 # ════════════════════════════════════════════════════════════════════
 _gfbcompare_usage() {
   _gfb_head "gfbcompare" "bandingkan dua branch"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Bandingkan dua branch secara menyeluruh: titik diverge, ahead/behind,"
+  _gfb_text "commit yang hanya ada di masing-masing, dan file yang berbeda."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbcompare <branch-a> <branch-b> [-f keyword]"
+  _gfb_sec "Argumen"
+  _gfb_opt "<branch-a>" "branch pertama (@ = branch aktif)"
+  _gfb_opt "<branch-b>" "branch kedua (@ = branch aktif)"
   _gfb_sec "Opsi"
   _gfb_opt "-f, --filter" "filter path file"
   _gfb_opt "-h, --help" "bantuan ini"
@@ -2318,16 +2393,21 @@ gfbcompare() {
 
 # ════════════════════════════════════════════════════════════════════
 # gfbmain — ringkasan semua perintah GFB
-#   gfbmain            → ringkasan
-#   gfbmain <perintah> → bantuan detail perintah itu (sama dengan <perintah> -h)
+#   gfbmain                   → ringkasan
+#   gfbmain help gfbstatus    → bantuan detail (juga: gfbmain help status, gfbmain gfbstatus)
 # ════════════════════════════════════════════════════════════════════
 gfbmain() {
-  if [[ -n "$1" && "$1" != "--help" && "$1" != "-h" ]]; then
-    if [[ "$1" == gfb* ]] && (( $+functions[$1] )); then
-      "$1" -h
+  # gfbmain help <cmd> / gfbmain --help <cmd> / gfbmain <cmd>  → bantuan detail
+  [[ "$1" == help || "$1" == --help || "$1" == -h ]] && shift
+  if [ -n "$1" ]; then
+    local cmd=$1
+    [[ "$cmd" == gfb* ]] || cmd="gfb$cmd"   # "status" → "gfbstatus"
+    if [[ "$cmd" != gfbmain ]] && (( $+functions[$cmd] )); then
+      "$cmd" -h
       return 0
     fi
     _gfb_err "Perintah tidak dikenal: $1"
+    _gfb_note "Lihat daftar perintah: gfbmain" >&2
     return 1
   fi
 
@@ -2357,8 +2437,8 @@ gfbmain() {
 
   _gfb_sec "Konvensi"
   _gfb_opt "@"            "nama branch aktif (\".\" cara lama juga masih jalan)"
-  _gfb_opt "<perintah> -h" "bantuan detail, contoh: gfb -h"
-  _gfb_opt "gfbmain <cmd>" "sama dengan <cmd> -h"
+  _gfb_opt "gfbmain help <cmd>" "bantuan detail: untuk apa, argumen, opsi, contoh"
+  _gfb_opt "<cmd> -h" "sama, langsung dari perintahnya (mis. gfbstatus -h)"
   print
 }
 
