@@ -8,45 +8,258 @@
 export GROQ_API_KEY="***"
 export GEMINI_API_KEY="***"
 
-# command untuk buat branch baru dari base branch, opsional merge & push
-# Fungsi GFB (Git Feature Branch)
-# contoh penggunaan:
-# gfb master fitur-keren
-# gfb -p develop fitur-keren
-# gfb -pm dev_sprint_9a dev-cfl-13/@   → "@" = nama branch aktif saat ini (seperti di git)
-#                                         jadi dev-cfl-13/@ → dev-cfl-13/<branch-aktif>,
-#                                         lalu branch aktif di-merge ke branch baru
-# gfb -pmy dev_sprint_9a dev-cfl-13/@  → sama, tanpa konfirmasi
-# gfb -n dev_sprint_9a dev-cfl-13/@    → dry-run, hanya tampilkan rencana
-# Cara lama ("." dan --merge) masih jalan, tapi akan muncul tips cara barunya.
+# ════════════════════════════════════════════════════════════════════
+# GFB — Git Feature Branch Toolkit
+#   gfbmain          → ringkasan semua perintah
+#   <perintah> -h    → bantuan detail tiap perintah
+#   @ (atau ".")     → nama branch aktif saat ini
+# ════════════════════════════════════════════════════════════════════
+
+# ── UI helpers ──────────────────────────────────────────────────────
+# Satu gaya untuk semua perintah gfb*:
+#   ◆ judul   › langkah   ✔ sukses   ▲ peringatan   ✖ error   ℹ info   ? pertanyaan
+#   Simbol di kolom 2, isi/detail di kolom 4, label key-value redup & rata kiri.
+# Warna otomatis mati kalau output bukan terminal atau NO_COLOR di-set
+# (GFB_FORCE_COLOR=1 untuk memaksa, dipakai mode watch gfbstatus).
+_gfb_color_on() { [[ -z "$NO_COLOR" ]] && [[ -t 1 || -n "$GFB_FORCE_COLOR" ]]; }
+
+# Isi variabel warna milik pemanggil (pemanggil: local B D N G R Y C M; _gfb_pal)
+_gfb_pal() {
+  if _gfb_color_on; then
+    _GFB_AFTER_HEAD=''
+    B=$'\e[1m' D=$'\e[2m' N=$'\e[0m' G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' M=$'\e[35m'
+  else
+    _GFB_AFTER_HEAD=''
+    B='' D='' N='' G='' R='' Y='' C='' M=''
+  fi
+}
+
+# _GFB_AFTER_HEAD: section tepat setelah judul tidak perlu baris kosong lagi
+_gfb_head()   { local B D N G R Y C M; _gfb_pal; print; print -r -- "  ${C}◆${N} ${B}$1${N}${2:+  ${D}$2${N}}"; print; _GFB_AFTER_HEAD=1; }
+_gfb_sec()    { local B D N G R Y C M after=$_GFB_AFTER_HEAD; _gfb_pal; [ -z "$after" ] && print; print -r -- "  ${B}$1${N}${2:+  ${D}$2${N}}"; }
+_gfb_kv()     { local B D N G R Y C M; _gfb_pal; printf "    ${D}%-9s${N} %s\n" "$1" "$2"; }
+_gfb_step()   { local B D N G R Y C M; _gfb_pal; print -r -- "  ${C}›${N} $*"; }
+_gfb_ok()     { local B D N G R Y C M; _gfb_pal; print -r -- "  ${G}✔${N} $*"; }
+_gfb_warn()   { local B D N G R Y C M; _gfb_pal; print -r -- "  ${Y}▲${N} $*"; }
+_gfb_err()    { local B D N G R Y C M; _gfb_pal; print -r -- "  ${R}✖${N} $*" >&2; }
+_gfb_info()   { local B D N G R Y C M; _gfb_pal; print -r -- "  ${C}ℹ${N} $*"; }
+_gfb_note()   { local B D N G R Y C M; _gfb_pal; print -r -- "    ${D}$*${N}"; }
+_gfb_item()   { local B D N G R Y C M; _gfb_pal; printf "    ${D}%3s${N}  %s\n" "$1" "$2"; }
+_gfb_bullet() { local B D N G R Y C M; _gfb_pal; print -r -- "    ${D}•${N} $*"; }
+_gfb_hint()   { local B D N G R Y C M; _gfb_pal; print -r -- "    ${D}→${N} ${C}$1${N}${2:+  ${D}$2${N}}"; }
+_gfb_rule()   { local B D N G R Y C M; _gfb_pal; print -r -- "  ${D}────────────────────────────────────────────────────────${N}"; }
+
+# Error argumen + arahkan ke bantuan: _gfb_bad <perintah> <pesan>
+_gfb_bad() { _gfb_err "$2"; _gfb_note "Lihat bantuan: $1 -h" >&2; }
+
+# Hapus 1 baris terakhir (untuk menghapus baris "› Generating…")
+_gfb_unwait() { [[ -t 1 ]] && printf '\e[1A\e[2K'; }
+
+# _gfb_confirm "pertanyaan" [y|n]  → return 0 kalau jawab ya (default n)
+_gfb_confirm() {
+  local B D N G R Y C M; _gfb_pal
+  local def=${2:-n} ans hint="[y/N]"
+  [ "$def" = y ] && hint="[Y/n]"
+  print
+  read "ans?  ${M}?${N} ${B}$1${N} ${D}$hint${N} "
+  [ -z "$ans" ] && ans=$def
+  [[ "$ans" == [yY]* ]]
+}
+
+# _gfb_ask <nama-var> "pertanyaan" [petunjuk]  → jawaban disimpan ke <nama-var>
+_gfb_ask() {
+  local B D N G R Y C M; _gfb_pal
+  print
+  read "$1?  ${M}?${N} ${B}$2${N}${3:+ ${D}$3${N}} "
+}
+
+_gfb_copy() { printf '%s' "$1" | pbcopy && _gfb_ok "Sudah di-copy ke clipboard."; }
+
+# Bantuan: _gfb_use "<pemakaian>", _gfb_opt "<flag>" "<arti>", _gfb_ex "<contoh>" ["<arti>"]
+_gfb_use() { local B D N G R Y C M; _gfb_pal; print -r -- "    ${B}$*${N}"; }
+_gfb_opt() { local B D N G R Y C M; _gfb_pal; printf "    ${C}%-20s${N} %s\n" "$1" "$2"; }
+_gfb_ex() {
+  local B D N G R Y C M; _gfb_pal
+  if [ -z "$2" ]; then
+    print -r -- "    $1"
+  elif (( ${#1} <= 40 )); then
+    printf "    %-40s ${D}%s${N}\n" "$1" "$2"
+  else
+    print -r -- "    $1"
+    printf "    %-40s ${D}%s${N}\n" "" "$2"
+  fi
+}
+
+# ── Git helpers ─────────────────────────────────────────────────────
+GFB_PROTECTED='^(master|main|develop|staging|production)$'
+
+_gfb_repo() { git rev-parse --git-dir >/dev/null 2>&1 && return 0; _gfb_err "Bukan di dalam git repository."; return 1; }
+_gfb_cur()  { git rev-parse --abbrev-ref HEAD 2>/dev/null; }
+# "@" atau "." (cara lama) = branch aktif saat ini
+_gfb_ref()  { if [[ "$1" == "@" || "$1" == "." ]]; then _gfb_cur; else print -r -- "$1"; fi; }
+
+# Daftar commit rapi: "hash  pesan · waktu · author", argumen diteruskan ke git log
+_gfb_commits() {
+  local B D N G R Y C M; _gfb_pal
+  git log --no-decorate --format="    ${Y}%h${N}  %s ${D}· %cr · %an${N}" "$@" 2>/dev/null
+}
+
+# Cetak hasil "git diff --name-status" berwarna + ringkasan per status
+_gfb_ns_list() {
+  local B D N G R Y C M; _gfb_pal
+  local -a rows=(${(f)1}) parts=()
+  local -A cnt label
+  label=(M diubah A baru D dihapus R rename C copy T tipe U conflict)
+  local row st f color
+  for row in "${rows[@]}"; do
+    st=${row[1]}
+    f=${row#*$'\t'}
+    f=${f//$'\t'/ → }
+    case $st in
+      A) color=$G ;; D) color=$R ;; R|C) color=$C ;; M) color=$Y ;; *) color=$D ;;
+    esac
+    cnt[$st]=$(( ${cnt[$st]:-0} + 1 ))
+    print -r -- "    ${color}${st}${N}  $f"
+  done
+  for st in M A D R C T U; do
+    (( ${cnt[$st]:-0} )) && parts+=("${cnt[$st]} ${label[$st]}")
+  done
+  print
+  print -r -- "    ${D}${#rows} file · ${(j: · :)parts}${N}"
+}
+
+# Ubah selisih detik jadi teks relatif, mis. "3 jam lalu"
+_gfb_ago() {
+  local s=$1
+  if   (( s < 60 ));    then echo "baru saja"
+  elif (( s < 3600 ));  then echo "$(( s / 60 )) menit lalu"
+  elif (( s < 86400 )); then echo "$(( s / 3600 )) jam lalu"
+  else                       echo "$(( s / 86400 )) hari lalu"
+  fi
+}
+
+# ── AI helpers (Groq / Gemini) ──────────────────────────────────────
+# Model default per provider
+_gfb_ai_model() {
+  case "$1" in
+    groq)   print -r -- "openai/gpt-oss-120b" ;;
+    gemini) print -r -- "gemini-2.0-flash" ;;
+    *) _gfb_err "Provider tidak dikenal: '$1'. Pilih: groq / gemini"; return 1 ;;
+  esac
+}
+
+# Cek API key provider; _gfb_ai_key <provider> [quiet]
+_gfb_ai_key() {
+  local var url sample
+  case "$1" in
+    groq)   var=GROQ_API_KEY;   url=https://console.groq.com;           sample=gsk_xxxxxx ;;
+    gemini) var=GEMINI_API_KEY; url=https://aistudio.google.com/apikey; sample=AIza_xxxxxx ;;
+    *) return 1 ;;
+  esac
+  [ -n "${(P)var}" ] && return 0
+  [ "$2" = quiet ] && return 1
+  _gfb_err "$var belum di-set."
+  _gfb_note "Daftar gratis di $url, lalu:" >&2
+  _gfb_note "export $var=\"$sample\"" >&2
+  return 1
+}
+
+# Kirim prompt ke provider AI, cetak hasilnya. Return 1 kalau error.
+# _gfb_ai_generate <provider> <model> <prompt> [temperature]
+_gfb_ai_generate() {
+  local provider="$1" model="$2" prompt="$3" temp="${4:-0.2}"
+  local json_payload response out
+
+  if [ "$provider" = "groq" ]; then
+    json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'model': sys.argv[2],
+    'messages': [{'role': 'user', 'content': sys.argv[1]}],
+    'temperature': float(sys.argv[3])
+}))
+" "$prompt" "$model" "$temp" 2>/dev/null)
+
+    # curl yang kirim (urllib diblokir Cloudflare 403)
+    response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+      -H "Authorization: Bearer $GROQ_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$json_payload")
+  else
+    json_payload=$(python3 -c "
+import sys, json
+print(json.dumps({
+    'contents': [{'parts': [{'text': sys.argv[1]}]}],
+    'generationConfig': {'temperature': float(sys.argv[2])}
+}))
+" "$prompt" "$temp" 2>/dev/null)
+
+    response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$json_payload")
+  fi
+
+  # Ambil teks hasil (hapus code fence kalau model membungkus pakai ```)
+  out=$(python3 -c "
+import sys, json
+try:
+  d = json.loads(sys.argv[2])
+except Exception:
+  print('Response bukan JSON:', sys.argv[2][:300]); sys.exit(1)
+err = d.get('error')
+if err:
+  msg = err.get('message', err) if isinstance(err, dict) else err
+  print('API error:', msg); sys.exit(1)
+try:
+  if sys.argv[1] == 'groq':
+    text = d['choices'][0]['message']['content']
+  else:
+    text = d['candidates'][0]['content']['parts'][0]['text']
+except Exception as e:
+  print('Parse error:', e); sys.exit(1)
+lines = [l.rstrip() for l in text.strip().splitlines() if not l.strip().startswith('\`\`\`')]
+print('\n'.join(lines).strip())
+" "$provider" "$response") || { _gfb_err "$out"; return 1; }
+  print -r -- "$out"
+}
+
+# ════════════════════════════════════════════════════════════════════
+# gfb — buat branch baru dari base branch, opsional merge & push
+#   gfb master fitur-keren
+#   gfb -p develop fitur-keren
+#   gfb -pm dev_sprint_9a dev-cfl-13/@   → @ = branch aktif, lalu branch aktif di-merge
+#   gfb -pmy dev_sprint_9a dev-cfl-13/@  → sama, tanpa konfirmasi
+#   gfb -n dev_sprint_9a dev-cfl-13/@    → dry-run, hanya tampilkan rencana
+# Kalau branch tujuan sudah ada (lokal/origin) → ditawarkan replace:
+# hapus branch lama lalu buat ulang. Cara lama ("." dan --merge) masih jalan.
+# ════════════════════════════════════════════════════════════════════
 _gfb_usage() {
-  echo "Gunakan: gfb [-p] [-m] [-y] [-n] <base-branch> <nama-branch-baru>"
-  echo ""
-  echo "  -p   push ke origin + set upstream"
-  echo "  -m   merge branch aktif ke branch baru (hanya bersama placeholder @)"
-  echo "  -y   tanpa konfirmasi"
-  echo "  -n   dry-run, hanya tampilkan rencana"
-  echo "  -h   bantuan ini"
-  echo "  (flag bisa digabung: -pm, -pmy)"
-  echo ""
-  echo "  @ = nama branch aktif saat ini. Bisa dipakai sebagai base, nama, atau prefix/@"
-  echo ""
-  echo "Contoh:"
-  echo "  gfb master fitur-login"
-  echo "  gfb -p develop fitur-api"
-  echo "  gfb -pm dev_sprint_9a dev-cfl-13/@     (dev-cfl-13/<branch-aktif> + merge branch aktif)"
-  echo "  gfb -n  dev_sprint_9a dev-cfl-13/@     (lihat rencana saja)"
+  _gfb_head "gfb" "buat branch baru dari base branch"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfb [-p] [-m] [-y] [-n] <base-branch> <nama-branch-baru>"
+  _gfb_sec "Opsi"
+  _gfb_opt "-p" "push ke origin + set upstream"
+  _gfb_opt "-m" "merge branch aktif ke branch baru (wajib pakai @ di nama)"
+  _gfb_opt "-y" "tanpa konfirmasi (replace tetap ditanya)"
+  _gfb_opt "-n" "dry-run, hanya tampilkan rencana"
+  _gfb_opt "-h" "bantuan ini"
+  _gfb_note "flag bisa digabung: -pm, -pmy"
+  _gfb_sec "Placeholder"
+  _gfb_opt "@" "nama branch aktif — bisa sebagai base, nama, atau prefix/@"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfb master fitur-login" "branch lokal saja"
+  _gfb_ex "gfb -p develop fitur-api" "buat + push"
+  _gfb_ex "gfb -pm dev_sprint_9a dev-cfl-13/@" "dev-cfl-13/<aktif> + merge branch aktif"
+  _gfb_ex "gfb -n dev_sprint_9a dev-cfl-13/@" "lihat rencana saja"
+  _gfb_sec "Branch sudah ada?"
+  _gfb_note "Ditawarkan replace: hapus branch lama (lokal + origin) lalu buat ulang."
+  print
 }
 
 gfb() {
-  local push_to_origin=false
-  local auto_merge=false
-  local assume_yes=false
-  local dry_run=false
-  local base_branch=""
-  local branch_name=""
-  local -a legacy_hints=()
-  local -a extra_args=()
+  local push_to_origin=false auto_merge=false assume_yes=false dry_run=false
+  local base_branch="" branch_name=""
+  local -a legacy_hints=() extra_args=()
   local i c
 
   # Parsing argumen
@@ -57,7 +270,7 @@ gfb() {
       --merge) auto_merge=true; legacy_hints+=("--merge → -m (bisa digabung: -pm)") ;;
       --yes) assume_yes=true ;;
       --dry-run) dry_run=true ;;
-      --*) echo "❌ Flag tidak dikenal: $1"; echo ""; _gfb_usage; return 1 ;;
+      --*) _gfb_bad gfb "Flag tidak dikenal: $1"; return 1 ;;
       -?*)
         # flag pendek, bisa digabung (mis. -pmy)
         for (( i = 2; i <= ${#1}; i++ )); do
@@ -68,7 +281,7 @@ gfb() {
             y) assume_yes=true ;;
             n) dry_run=true ;;
             h) _gfb_usage; return 0 ;;
-            *) echo "❌ Flag tidak dikenal: -$c (dari $1)"; echo ""; _gfb_usage; return 1 ;;
+            *) _gfb_bad gfb "Flag tidak dikenal: -$c (dari $1)"; return 1 ;;
           esac
         done
         ;;
@@ -86,26 +299,17 @@ gfb() {
   done
 
   if (( ${#extra_args} )); then
-    echo "❌ Argumen berlebih: ${extra_args[*]}"
-    echo ""
-    _gfb_usage
+    _gfb_bad gfb "Argumen berlebih: ${extra_args[*]}"
     return 1
   fi
-
   if [ -z "$base_branch" ] || [ -z "$branch_name" ]; then
-    echo "❌ Base branch dan nama branch baru wajib diisi."
-    echo ""
-    _gfb_usage
+    _gfb_bad gfb "Base branch dan nama branch baru wajib diisi."
     return 1
   fi
+  _gfb_repo || return 1
 
-  if ! git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "❌ Bukan di dalam git repository."
-    return 1
-  fi
-
-  local current_branch
-  current_branch=$(git rev-parse --abbrev-ref HEAD)
+  local B D N G R Y C M; _gfb_pal
+  local current_branch=$(_gfb_cur)
 
   # "@" (atau "." cara lama) = branch aktif saat ini
   local used_placeholder=false
@@ -132,107 +336,152 @@ gfb() {
 
   # Tips kalau masih pakai cara lama (tetap dijalankan)
   if (( ${#legacy_hints} )); then
-    echo "💡 Tips: kamu memakai cara lama. Cara baru:"
-    local h
-    for h in "${legacy_hints[@]}"; do echo "     $h"; done
-    local new_cmd="gfb -"
+    local new_cmd="gfb -" h
     [ "$push_to_origin" = true ] && new_cmd+="p"
     [ "$auto_merge" = true ] && new_cmd+="m"
     [ "$assume_yes" = true ] && new_cmd+="y"
     [ "$dry_run" = true ] && new_cmd+="n"
     [ "$new_cmd" = "gfb -" ] && new_cmd="gfb"
-    echo "   Contoh: $new_cmd <base> <prefix>/@"
-    echo ""
+    print
+    _gfb_info "Kamu memakai cara lama (tetap dijalankan). Cara baru:"
+    for h in "${legacy_hints[@]}"; do _gfb_note "$h"; done
+    _gfb_note "contoh: $new_cmd <base> <prefix>/@"
   fi
 
   if [[ "$used_placeholder" = true && "$current_branch" = "HEAD" ]]; then
-    echo "❌ Sedang detached HEAD, placeholder @ tidak bisa dipakai."
+    _gfb_err "Sedang detached HEAD, placeholder @ tidak bisa dipakai."
     return 1
   fi
-
   if [[ "$auto_merge" = true && "$placeholder_in_name" != true ]]; then
-    echo "❌ -m hanya bisa dipakai bersama placeholder @ di nama branch (mis. prefix/@)."
-    echo "   Tanpa @, tidak ada branch yang bisa di-merge."
+    _gfb_err "-m hanya bisa dipakai bersama placeholder @ di nama branch (mis. prefix/@)."
+    _gfb_note "Tanpa @, tidak ada branch yang bisa di-merge." >&2
     return 1
   fi
-
   if ! git check-ref-format --branch "$branch_name" >/dev/null 2>&1; then
-    echo "❌ Nama branch tidak valid: $branch_name"
+    _gfb_err "Nama branch tidak valid: $branch_name"
     return 1
   fi
 
-  if git show-ref --verify --quiet "refs/heads/$branch_name"; then
-    echo "❌ Branch '$branch_name' sudah ada secara lokal."
-    return 1
+  # Branch sudah ada (lokal / origin) → tawarkan replace: hapus lalu buat ulang
+  local exists_local=false exists_remote=false replace_existing=false existing_where=""
+  git show-ref --verify --quiet "refs/heads/$branch_name" && exists_local=true
+  git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1 && exists_remote=true
+  if [[ "$exists_local" = true || "$exists_remote" = true ]]; then
+    if [[ "$branch_name" = "$current_branch" || "$branch_name" = "$base_branch" ]]; then
+      _gfb_err "Branch '$branch_name' sudah ada dan sedang dipakai (aktif/base), tidak bisa di-replace."
+      return 1
+    fi
+    [ "$exists_local" = true ] && existing_where="lokal"
+    [ "$exists_remote" = true ] && existing_where="${existing_where:+$existing_where + }origin"
+    replace_existing=true
   fi
 
-  # Rencana
-  local merge_desc="tidak"
+  # ── Rencana ──
+  local merge_desc="${D}tidak${N}"
   if [ "$placeholder_in_name" = true ]; then
     if [ "$auto_merge" = true ]; then
-      merge_desc="$current_branch → $branch_name"
+      merge_desc="$current_branch ${D}→ branch baru${N}"
     else
-      merge_desc="tidak (tambah -m untuk merge $current_branch)"
+      merge_desc="${D}tidak — tambah -m untuk merge $current_branch${N}"
     fi
   fi
-  echo "📋 Rencana:"
-  echo "   base  : $base_branch (pull dari origin)"
-  echo "   baru  : $branch_name"
-  echo "   merge : $merge_desc"
-  echo "   push  : $([ "$push_to_origin" = true ] && echo ya || echo "tidak (tambah -p untuk push)")"
+
+  _gfb_head "gfb" "buat branch baru"
+  _gfb_kv "base" "$base_branch  ${D}(pull dari origin)${N}"
+  _gfb_kv "branch" "${B}$branch_name${N}"
+  _gfb_kv "merge" "$merge_desc"
+  _gfb_kv "push" "$([ "$push_to_origin" = true ] && echo "ya" || echo "${D}tidak — tambah -p untuk push${N}")"
+
+  if [ "$replace_existing" = true ]; then
+    print
+    _gfb_warn "Branch ini sudah ada ${D}($existing_where)${N}"
+    [ "$exists_local" = true ] && _gfb_note "commit terakhir: $(git log -1 --format='%h %s · %cr' "$branch_name")"
+    _gfb_note "replace = hapus branch lama ($existing_where), lalu buat ulang dari $base_branch"
+  fi
 
   if [ "$dry_run" = true ]; then
-    echo "🧪 Dry-run, tidak ada yang dijalankan."
+    print
+    _gfb_info "Dry-run — tidak ada yang dijalankan."
+    print
     return 0
   fi
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "❌ Ada uncommitted changes di '$current_branch'. Commit atau stash dulu."
+    print
+    _gfb_err "Ada uncommitted changes di '$current_branch'. Commit atau stash dulu."
     return 1
   fi
 
-  # Konfirmasi hanya kalau memakai placeholder (nama hasil turunan), kecuali -y
-  if [[ "$used_placeholder" = true && "$assume_yes" != true ]]; then
-    local confirm
-    read "confirm?Lanjut? [Y/n]: "
-    if [[ "$confirm" == [nN]* ]]; then
-      echo "❌ Dibatalkan."
+  # Replace selalu minta konfirmasi (walau -y), karena menghapus branch.
+  # Selain itu konfirmasi hanya kalau memakai placeholder (nama hasil turunan), kecuali -y.
+  if [ "$replace_existing" = true ]; then
+    if ! _gfb_confirm "Hapus branch lama ($existing_where) lalu buat ulang?" n; then
+      _gfb_info "Dibatalkan."
+      return 1
+    fi
+  elif [[ "$used_placeholder" = true && "$assume_yes" != true ]]; then
+    if ! _gfb_confirm "Lanjut?" y; then
+      _gfb_info "Dibatalkan."
       return 1
     fi
   fi
 
-  echo "🔄 Pulling newest $base_branch..."
-  if ! { git checkout "$base_branch" && git pull origin "$base_branch"; }; then
-    echo "⚠️  Gagal update $base_branch."
+  print
+  _gfb_step "Pull $base_branch"
+  if ! { git checkout -q "$base_branch" && git pull -q origin "$base_branch"; }; then
+    _gfb_err "Gagal update $base_branch."
     return 1
   fi
 
-  echo "🌿 Membuat branch: $branch_name dari $base_branch"
-  if ! git checkout -b "$branch_name"; then
-    echo "❌ Gagal membuat branch $branch_name."
+  if [ "$replace_existing" = true ]; then
+    if [ "$exists_local" = true ]; then
+      _gfb_step "Hapus branch lama ${D}(lokal)${N}"
+      if ! git branch -q -D "$branch_name"; then
+        _gfb_err "Gagal menghapus branch lokal $branch_name."
+        return 1
+      fi
+    fi
+    if [ "$exists_remote" = true ]; then
+      _gfb_step "Hapus branch lama ${D}(origin)${N}"
+      if ! git push -q origin --delete "$branch_name"; then
+        _gfb_err "Gagal menghapus branch di origin (branch lokal sudah terhapus)."
+        return 1
+      fi
+    fi
+  fi
+
+  _gfb_step "Buat branch $branch_name"
+  if ! git checkout -q -b "$branch_name"; then
+    _gfb_err "Gagal membuat branch $branch_name."
     return 1
   fi
 
   if [ "$auto_merge" = true ]; then
-    echo "🔀 Merge '$current_branch' ke '$branch_name'..."
+    _gfb_step "Merge $current_branch"
     if ! git merge "$current_branch"; then
-      echo "⚠️  Ada conflict saat merge. Selesaikan manual lalu commit."
-      [ "$push_to_origin" = true ] && echo "   Push dibatalkan. Setelah selesai: git push -u origin $branch_name"
+      print
+      _gfb_warn "Ada conflict saat merge. Selesaikan manual lalu commit."
+      [ "$push_to_origin" = true ] && _gfb_hint "git push -u origin $branch_name" "push setelah selesai"
+      print
       return 1
     fi
   fi
 
   if [ "$push_to_origin" = true ]; then
-    echo "🚀 Push dan set upstream..."
-    if ! git push -u origin "$branch_name"; then
-      echo "❌ Push gagal. Coba lagi: git push -u origin $branch_name"
+    _gfb_step "Push ke origin"
+    if ! git push -q -u origin "$branch_name"; then
+      _gfb_err "Push gagal."
+      _gfb_hint "git push -u origin $branch_name" "coba lagi"
       return 1
     fi
-    echo "✅ Berhasil dibuat dan di-push!"
+    print
+    _gfb_ok "Branch ${B}$branch_name${N} siap dan sudah di-push."
   else
-    echo "📍 Branch dibuat secara lokal."
-    echo "Gunakan: git push -u origin $branch_name"
+    print
+    _gfb_ok "Branch ${B}$branch_name${N} dibuat secara lokal."
+    _gfb_hint "git push -u origin $branch_name" "untuk push"
   fi
+  print
 }
 
 # Tab completion: base branch dari daftar branch lokal
@@ -250,407 +499,418 @@ _gfb() {
 }
 (( $+functions[compdef] )) && compdef _gfb gfb
 
-# Git Feature Branch Cleaner
-# Menghapus branch yang sudah merged ke base branch
-# Aman: ignore branch penting + bisa pilih branch
-#
-# contoh:
-# gfbclean master
-#
-# contoh dengan filter:
-# gfbclean master -f kiki
-#
-# contoh input pilihan:
-# 1 3 5
-# 1,3,5
-# all
-#
-# output:
-# 🗑 Branch yang bisa dihapus:
-# [1] feature/login
-# [2] feature/payment
-# [3] bugfix/token
-# Pilih nomor branch (contoh: 1 3 atau 1,3) atau ketik 'all' untuk semua:
-gfbclean() {
-  local base_branch=""
-  local filter=""
+# ════════════════════════════════════════════════════════════════════
+# gfbclean — hapus branch yang sudah merged ke base branch (lokal + origin)
+# Aman: branch penting & branch aktif dilewati, bisa pilih nomor / all.
+#   gfbclean master
+#   gfbclean master -f kiki
+# ════════════════════════════════════════════════════════════════════
+_gfbclean_usage() {
+  _gfb_head "gfbclean" "hapus branch yang sudah merged ke base"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbclean <base-branch> [-f keyword]"
+  _gfb_sec "Opsi"
+  _gfb_opt "-f, --filter" "hanya branch yang mengandung keyword"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbclean master"
+  _gfb_ex "gfbclean master -f kiki" "hanya yang mengandung 'kiki'"
+  _gfb_sec "Catatan"
+  _gfb_note "Pilihan: 1 3 / 1,3 / all. Dihapus di lokal + origin."
+  _gfb_note "master, main, develop, staging, production & branch aktif selalu dilewati."
+  print
+}
 
-  # parse arg
+gfbclean() {
+  local base_branch="" filter=""
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -f|--filter)
-        filter="$2"
-        shift
-        ;;
-      *)
-        base_branch="$1"
-        ;;
+      -h|--help) _gfbclean_usage; return 0 ;;
+      -f|--filter) filter="$2"; shift ;;
+      -*) _gfb_bad gfbclean "Flag tidak dikenal: $1"; return 1 ;;
+      *) base_branch="$1" ;;
     esac
     shift
   done
 
-  # "." berarti merefer ke branch aktif saat ini
-  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
-
+  base_branch=$(_gfb_ref "$base_branch")
   if [ -z "$base_branch" ]; then
-    echo "❌ Gunakan: gfbclean <base-branch> [-f keyword]"
+    _gfb_bad gfbclean "Base branch wajib diisi."
+    return 1
+  fi
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+  local original_branch=$(_gfb_cur)
+
+  # Ctrl+C: balik ke branch semula sebelum keluar
+  trap "print; _gfb_info 'Dibatalkan, kembali ke $original_branch'; git checkout -q \"$original_branch\"; trap - INT; return 1" INT
+
+  _gfb_head "gfbclean" "hapus branch yang sudah merged ke $base_branch"
+  _gfb_step "Pull $base_branch"
+  if ! { git checkout -q "$base_branch" && git pull -q origin "$base_branch"; }; then
+    _gfb_err "Gagal update $base_branch."
+    git checkout -q "$original_branch"
+    trap - INT
     return 1
   fi
 
-  local original_branch=$(git rev-parse --abbrev-ref HEAD)
-
-  # Tangkap Ctrl+C: balik ke branch semula sebelum exit
-  trap "echo ''; echo '🔙 Kembali ke branch: $original_branch'; git checkout \"$original_branch\"; trap - INT; return 1" INT
-
-  echo "🔄 Pulling newest $base_branch..."
-  git checkout "$base_branch" && git pull origin "$base_branch" || { trap - INT; return 1; }
-
-  echo "🔍 Mencari branch yang sudah merged ke $base_branch..."
   local branches
-  branches=$(git branch --merged "$base_branch" \
-    | sed 's/^[* ]*//' \
-    | grep -vE '^(master|main|develop|staging|production)$')
-
-  if [ -n "$filter" ]; then
-    branches=$(echo "$branches" | grep "$filter")
-  fi
+  branches=$(git branch --merged "$base_branch" --format='%(refname:short)' \
+    | grep -vE "$GFB_PROTECTED" \
+    | grep -vxF -e "$base_branch" -e "$original_branch")
+  [ -n "$filter" ] && branches=$(print -r -- "$branches" | grep -- "$filter")
 
   if [ -z "$branches" ]; then
-    echo "✅ Tidak ada branch yang cocok untuk dibersihkan."
+    print
+    _gfb_ok "Tidak ada branch merged${filter:+ yang cocok dengan '$filter'} untuk dibersihkan."
+    print
+    _gfb_step "Kembali ke $original_branch"
+    git checkout -q "$original_branch"
     trap - INT
+    print
     return 0
   fi
 
-  echo ""
-  echo "🗑 Branch yang bisa dihapus:"
-  local i=1
-  declare -a branch_list
-  while read -r branch; do
-    echo "[$i] $branch"
-    branch_list[$i]="$branch"
-    ((i++))
-  done <<< "$branches"
+  local -a branch_list=(${(f)branches})
+  _gfb_sec "Sudah merged ke $base_branch" "${#branch_list} branch"
+  local i
+  for (( i = 1; i <= ${#branch_list}; i++ )); do
+    _gfb_item $i "${branch_list[i]}  ${D}· $(git log -1 --format=%cr "${branch_list[i]}")${N}"
+  done
 
-  echo ""
-  read "selection?Pilih nomor branch (contoh: 1,3 atau 1,3,5) atau ketik 'all' untuk semua: "
+  local selection
+  _gfb_ask selection "Pilih nomor" "(1 3 / 1,3 / all, Enter = batal)"
 
-  # ubah koma jadi spasi lalu split ke array (zsh-safe)
-  local selection_clean=$(echo "$selection" | tr ',' ' ')
-  local -a nums
-  read -A nums <<< "$selection_clean"
-
-  local -a selected_branches
+  local -a selected_branches=() nums=()
   if [[ "$selection" == "all" ]]; then
     selected_branches=("${branch_list[@]}")
   else
+    nums=(${=${selection//,/ }})
+    local num
     for num in "${nums[@]}"; do
-      [[ "$num" =~ ^[0-9]+$ ]] && selected_branches+=("${branch_list[$num]}")
+      if [[ "$num" == <-> ]] && (( num >= 1 && num <= ${#branch_list} )); then
+        selected_branches+=("${branch_list[num]}")
+      else
+        _gfb_warn "Nomor '$num' tidak valid, dilewati."
+      fi
     done
   fi
 
-  echo ""
-  echo "Branch yang akan dihapus:"
-  for b in "${selected_branches[@]}"; do
-    [ -z "$b" ] && continue
-    echo "- $b"
-  done
-
-  echo ""
-  read "confirm?Lanjutkan hapus branch di atas? (y/N): "
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo "❌ Dibatalkan."
+  if (( ${#selected_branches} == 0 )); then
+    _gfb_info "Tidak ada yang dipilih. Dibatalkan."
+    print
+    _gfb_step "Kembali ke $original_branch"
+    git checkout -q "$original_branch"
     trap - INT
+    print
     return 0
   fi
 
-  for branch in "${selected_branches[@]}"; do
-    [ -z "$branch" ] && continue
-    echo "➡️ Hapus local: $branch"
-    git branch -d "$branch"
-    echo "➡️ Hapus origin: $branch"
-    git push origin --delete "$branch"
+  _gfb_sec "Akan dihapus" "${#selected_branches} branch · lokal + origin"
+  local b
+  for b in "${selected_branches[@]}"; do
+    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then
+      _gfb_bullet "$b"
+    else
+      _gfb_bullet "$b  ${D}(tidak ada di origin)${N}"
+    fi
   done
 
-  echo "✅ Selesai membersihkan branch."
-  echo ""
-  echo "🔙 Kembali ke branch: $original_branch"
-  git checkout "$original_branch"
-  trap - INT  # reset trap setelah selesai normal
+  if ! _gfb_confirm "Lanjut hapus branch di atas?" n; then
+    _gfb_info "Dibatalkan."
+  else
+    print
+    local done_count=0 has_remote
+    for b in "${selected_branches[@]}"; do
+      has_remote=false
+      git show-ref --verify --quiet "refs/remotes/origin/$b" && has_remote=true
+      if ! git branch -q -d "$b" 2>/dev/null; then
+        _gfb_warn "$b ${D}— gagal hapus lokal (pakai gfbdel untuk paksa)${N}"
+        continue
+      fi
+      if [ "$has_remote" = true ] && ! git push -q origin --delete "$b" 2>/dev/null; then
+        _gfb_warn "$b ${D}— lokal terhapus, origin gagal${N}"
+        continue
+      fi
+      _gfb_ok "$b"
+      (( done_count++ ))
+    done
+    print
+    _gfb_ok "${B}$done_count dari ${#selected_branches} branch dihapus.${N}"
+  fi
+
+  print
+  _gfb_step "Kembali ke $original_branch"
+  git checkout -q "$original_branch"
+  trap - INT
+  print
 }
 
-# Git Feature Branch Checker
-# Menampilkan branch yang BELUM merged ke base branch
-# Aman: ignore branch penting
-#
-# contoh:
-# gfbcheck master
-#
-# contoh dengan filter:
-# gfbcheck master -f kiki
-#
-# output:
-# 🌿 Branch yang belum merged ke master:
-# [1] feature/login
-# [2] feature/payment
-# [3] bugfix/token
-gfbcheck() {
-  local base_branch=""
-  local filter=""
+# ════════════════════════════════════════════════════════════════════
+# gfbcheck — tampilkan branch yang BELUM merged ke base branch
+#   gfbcheck master
+#   gfbcheck master -f kiki
+# ════════════════════════════════════════════════════════════════════
+_gfbcheck_usage() {
+  _gfb_head "gfbcheck" "branch yang belum merged ke base"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbcheck <base-branch> [-f keyword]"
+  _gfb_sec "Opsi"
+  _gfb_opt "-f, --filter" "hanya branch yang mengandung keyword"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbcheck master"
+  _gfb_ex "gfbcheck develop -f bugfix" "hanya yang mengandung 'bugfix'"
+  print
+}
 
-  # parse arg
+gfbcheck() {
+  local base_branch="" filter=""
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -f|--filter)
-        filter="$2"
-        shift
-        ;;
-      *)
-        base_branch="$1"
-        ;;
+      -h|--help) _gfbcheck_usage; return 0 ;;
+      -f|--filter) filter="$2"; shift ;;
+      -*) _gfb_bad gfbcheck "Flag tidak dikenal: $1"; return 1 ;;
+      *) base_branch="$1" ;;
     esac
     shift
   done
 
-  # "." berarti merefer ke branch aktif saat ini
-  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
-
+  base_branch=$(_gfb_ref "$base_branch")
   if [ -z "$base_branch" ]; then
-    echo "❌ Gunakan: gfbcheck <base-branch> [-f keyword]"
+    _gfb_bad gfbcheck "Base branch wajib diisi."
+    return 1
+  fi
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+  local original_branch=$(_gfb_cur)
+
+  _gfb_head "gfbcheck" "branch yang belum merged ke $base_branch"
+  _gfb_step "Pull $base_branch"
+  if ! { git checkout -q "$base_branch" && git pull -q origin "$base_branch"; }; then
+    _gfb_err "Gagal update $base_branch."
+    git checkout -q "$original_branch"
     return 1
   fi
 
-  local original_branch=$(git rev-parse --abbrev-ref HEAD)
-
-  echo "🔄 Pulling newest $base_branch..."
-  git checkout "$base_branch" && git pull origin "$base_branch" || return 1
-
-  echo "🔍 Mencari branch yang belum merged ke $base_branch..."
   local branches
-  branches=$(git branch --no-merged "$base_branch" \
-    | sed 's/^[* ]*//' \
-    | grep -vE '^(master|main|develop|staging|production)$')
-
-  if [ -n "$filter" ]; then
-    branches=$(echo "$branches" | grep "$filter")
-  fi
+  branches=$(git branch --no-merged "$base_branch" --format='%(refname:short)' | grep -vE "$GFB_PROTECTED")
+  [ -n "$filter" ] && branches=$(print -r -- "$branches" | grep -- "$filter")
 
   if [ -z "$branches" ]; then
-    echo "✅ Semua branch sudah merged ke $base_branch."
-    return 0
-  fi
-
-  echo ""
-  echo "🌿 Branch yang belum merged ke $base_branch:"
-  local i=1
-  while read -r branch; do
-    echo "[$i] $branch"
-    ((i++))
-  done <<< "$branches"
-
-  echo ""
-  echo "Total: $((i-1)) branch"
-  echo ""
-  echo "🔙 Kembali ke branch: $original_branch"
-  git checkout "$original_branch"
-}
-
-# gfblog master                        → compare master vs current branch
-# gfblog master feature/login          → compare master vs feature/login
-gfblog() {
-  local base_branch="${1:-master}"
-  local target_branch="${2:-$(git rev-parse --abbrev-ref HEAD)}"
-
-  # "." berarti merefer ke branch aktif saat ini
-  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
-  [ "$target_branch" = "." ] && target_branch=$(git rev-parse --abbrev-ref HEAD)
-
-  if [ "$target_branch" = "$base_branch" ]; then
-    echo "⚠️  Target branch sama dengan base branch ($base_branch)."
-    return 1
-  fi
-
-  local commits=$(git log "$base_branch".."$target_branch" --oneline --no-decorate)
-
-  if [ -z "$commits" ]; then
-    echo "✅ Tidak ada commit baru dibanding $base_branch."
-    return 0
-  fi
-
-  echo ""
-  echo "🌿 Target branch : $target_branch"
-  echo "📌 Base branch   : $base_branch"
-  echo ""
-  echo "📋 Commit yang belum ada di $base_branch:"
-  echo "$commits" | while read -r line; do
-    echo "  - $line"
-  done
-  echo ""
-  echo "Total: $(echo "$commits" | wc -l | tr -d ' ') commit"
-}
-
-# Git Feature Branch Find Commit
-# Mencari commit hash ada di branch mana saja
-# Opsional: -r untuk cek remote branches juga
-#
-# contoh:
-# gfbfind 56c97cde945a078ee1525a20acc9ea0927c5580b
-# gfbfind 56c97cde -r
-# gfbfind 56c97cde -f feature
-gfbfind() {
-  local commit_hash=""
-  local include_remote=false
-  local filter=""
-
-  # Parsing argumen
-  while [[ "$#" -gt 0 ]]; do
-    case $1 in
-      -r|--remote) include_remote=true ;;
-      -f|--filter)
-        filter="$2"
-        shift
-        ;;
-      *)
-        if [ -z "$commit_hash" ]; then
-          commit_hash="$1"
-        fi
-        ;;
-    esac
-    shift
-  done
-
-  # Validasi input
-  if [ -z "$commit_hash" ]; then
-    echo "❌ Gunakan: gfbfind <commit-hash> [-r] [-f keyword]"
-    echo "Contoh:"
-    echo "  gfbfind 56c97cde"
-    echo "  gfbfind 56c97cde945a078ee1525a20acc9ea0927c5580b -r"
-    echo "  gfbfind 56c97cde -f feature"
-    return 1
-  fi
-
-  # Validasi commit hash exist
-  if ! git cat-file -e "$commit_hash^{commit}" 2>/dev/null; then
-    echo "❌ Commit '$commit_hash' tidak ditemukan di repo ini."
-    return 1
-  fi
-
-  local short_hash=$(git rev-parse --short "$commit_hash")
-  local commit_msg=$(git log -1 --pretty=format:"%s" "$commit_hash")
-
-  echo ""
-  echo "🔍 Mencari commit: $short_hash"
-  echo "📝 Pesan        : $commit_msg"
-  echo ""
-
-  # Tentukan flag: local saja atau termasuk remote
-  local branch_flag=""
-  if [ "$include_remote" = true ]; then
-    echo "🌐 Mode: local + remote branches"
-    branch_flag="-a"  # all: local + remote
+    print
+    _gfb_ok "Semua branch${filter:+ yang cocok dengan '$filter'} sudah merged ke $base_branch."
   else
-    echo "💻 Mode: local branches saja (gunakan -r untuk remote)"
-    branch_flag=""    # default: local only
-  fi
-  echo ""
-
-  # Cari branch yang mengandung commit ini
-  local found_branches
-  found_branches=$(git branch $branch_flag --contains "$commit_hash" \
-    | sed 's/^[* ]*//' \
-    | sed 's|^remotes/||')  # rapikan prefix remotes/
-
-  if [ -n "$filter" ]; then
-    found_branches=$(echo "$found_branches" | grep "$filter")
+    local -a list=(${(f)branches})
+    _gfb_sec "Belum merged" "${#list} branch"
+    local i ahead
+    for (( i = 1; i <= ${#list}; i++ )); do
+      ahead=$(git rev-list --count "$base_branch..${list[i]}" 2>/dev/null)
+      _gfb_item $i "${list[i]}  ${Y}$ahead commit${N} ${D}· $(git log -1 --format='%cr · %an' "${list[i]}")${N}"
+    done
   fi
 
-  if [ -z "$found_branches" ]; then
-    echo "⚠️  Commit tidak ditemukan di branch manapun."
-    return 0
-  fi
-
-  local count=$(echo "$found_branches" | wc -l | tr -d ' ')
-
-  echo "✅ Ditemukan di $count branch:"
-  echo ""
-  local i=1
-  while read -r branch; do
-    [ -z "$branch" ] && continue
-    echo "  [$i] $branch"
-    ((i++))
-  done <<< "$found_branches"
-  echo ""
+  print
+  _gfb_step "Kembali ke $original_branch"
+  git checkout -q "$original_branch"
+  print
 }
 
-# Git Feature Branch List
-# Menampilkan list branch yang mengandung keyword tertentu,
-# diurutkan dari yang terakhir digunakan (checkout / commit terbaru di atas)
-# Opsional: -r untuk include remote branches juga
-#
-# contoh:
-# gfbls kiki
-# gfbls kiki -r
-gfbls() {
-  local keyword=""
-  local include_remote=false
+# ════════════════════════════════════════════════════════════════════
+# gfblog — commit di target branch yang belum ada di base
+#   gfblog master                 → master vs branch aktif
+#   gfblog master feature/login   → master vs feature/login
+# ════════════════════════════════════════════════════════════════════
+_gfblog_usage() {
+  _gfb_head "gfblog" "commit yang belum ada di base"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfblog [base-branch] [target-branch]"
+  _gfb_note "default: base = master, target = branch aktif (@)"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfblog master" "master vs branch aktif"
+  _gfb_ex "gfblog master feature/login" "master vs feature/login"
+  print
+}
 
-  # Parsing argumen
+gfblog() {
+  [[ "$1" == -h || "$1" == --help ]] && { _gfblog_usage; return 0; }
+  _gfb_repo || return 1
+
+  local base_branch=$(_gfb_ref "${1:-master}")
+  local target_branch=$(_gfb_ref "${2:-@}")
+  local ref
+  for ref in "$base_branch" "$target_branch"; do
+    if ! git rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+      _gfb_err "Branch '$ref' tidak ditemukan."
+      return 1
+    fi
+  done
+  if [ "$target_branch" = "$base_branch" ]; then
+    _gfb_warn "Target branch sama dengan base branch ($base_branch)."
+    return 1
+  fi
+
+  local count=$(git rev-list --count "$base_branch..$target_branch")
+
+  _gfb_head "gfblog" "commit yang belum ada di base"
+  _gfb_kv "target" "$target_branch"
+  _gfb_kv "base" "$base_branch"
+
+  if (( count == 0 )); then
+    print
+    _gfb_ok "Tidak ada commit baru dibanding $base_branch."
+  else
+    _gfb_sec "Commit" "$count"
+    _gfb_commits "$base_branch..$target_branch"
+  fi
+  print
+}
+
+# ════════════════════════════════════════════════════════════════════
+# gfbfind — cari commit ada di branch mana saja
+#   gfbfind 56c97cde
+#   gfbfind 56c97cde -r            → termasuk remote
+#   gfbfind 56c97cde -f feature    → filter nama branch
+# ════════════════════════════════════════════════════════════════════
+_gfbfind_usage() {
+  _gfb_head "gfbfind" "cari commit ada di branch mana saja"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbfind <commit-hash> [-r] [-f keyword]"
+  _gfb_sec "Opsi"
+  _gfb_opt "-r, --remote" "termasuk remote branch"
+  _gfb_opt "-f, --filter" "filter nama branch"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbfind 56c97cde" "cari di branch lokal"
+  _gfb_ex "gfbfind 56c97cde -r" "termasuk remote"
+  _gfb_ex "gfbfind 56c97cde -r -f feature" "+ filter nama branch"
+  print
+}
+
+gfbfind() {
+  local commit_hash="" include_remote=false filter=""
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
+      -h|--help) _gfbfind_usage; return 0 ;;
       -r|--remote) include_remote=true ;;
-      *)
-        if [ -z "$keyword" ]; then
-          keyword="$1"
-        fi
-        ;;
+      -f|--filter) filter="$2"; shift ;;
+      -*) _gfb_bad gfbfind "Flag tidak dikenal: $1"; return 1 ;;
+      *) [ -z "$commit_hash" ] && commit_hash="$1" ;;
     esac
     shift
   done
 
-  # Jika tidak ada keyword, tampil semua branch
-  # keyword kosong = grep akan match semua baris
+  if [ -z "$commit_hash" ]; then
+    _gfb_bad gfbfind "Commit hash wajib diisi."
+    return 1
+  fi
+  _gfb_repo || return 1
+  if ! git cat-file -e "$commit_hash^{commit}" 2>/dev/null; then
+    _gfb_err "Commit '$commit_hash' tidak ditemukan di repo ini."
+    return 1
+  fi
 
-  # Ambil local branches
-  local local_branches
-  local_branches=$(git branch \
-    | sed 's/^[* ]*//' \
-    | grep "$keyword")
+  local B D N G R Y C M; _gfb_pal
 
-  # Ambil remote branches (selalu, untuk keperluan cek & mode -r)
-  local remote_branches
-  remote_branches=$(git branch -r \
-    | sed 's/^[* ]*//' \
-    | sed 's/^origin\///' \
-    | grep -v 'HEAD' \
-    | grep "$keyword")
-
-  # Tentukan sumber data sesuai mode
-  local all_branches
+  _gfb_head "gfbfind" "cari commit ada di branch mana saja"
+  _gfb_kv "commit" "$(git log -1 --format="${Y}%h${N} %s ${D}· %cr · %an${N}" "$commit_hash")"
   if [ "$include_remote" = true ]; then
-    all_branches=$(printf "%s\n%s\n" "$local_branches" "$remote_branches" \
-      | grep -v '^$' | sort -u)
+    _gfb_kv "mode" "lokal + remote"
+  else
+    _gfb_kv "mode" "lokal ${D}(tambah -r untuk remote)${N}"
+  fi
+  [ -n "$filter" ] && _gfb_kv "filter" "$filter"
+
+  local -a flag=()
+  [ "$include_remote" = true ] && flag=(-a)
+  local found
+  found=$(git branch "${flag[@]}" --contains "$commit_hash" --format='%(refname:short)' | grep -v '/HEAD$')
+  [ -n "$filter" ] && found=$(print -r -- "$found" | grep -- "$filter")
+
+  if [ -z "$found" ]; then
+    print
+    _gfb_warn "Commit tidak ditemukan di branch manapun."
+    print
+    return 0
+  fi
+
+  local -a list=(${(f)found})
+  _gfb_sec "Ditemukan di" "${#list} branch"
+  local i
+  for (( i = 1; i <= ${#list}; i++ )); do
+    _gfb_item $i "${list[i]}"
+  done
+  print
+}
+
+# ════════════════════════════════════════════════════════════════════
+# gfbls — daftar branch (opsional keyword), urut dari yang terakhir dipakai
+#   gfbls kiki
+#   gfbls kiki -r    → termasuk remote
+# ════════════════════════════════════════════════════════════════════
+_gfbls_usage() {
+  _gfb_head "gfbls" "daftar branch, urut terakhir dipakai"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbls [keyword] [-r]"
+  _gfb_sec "Opsi"
+  _gfb_opt "-r, --remote" "termasuk remote branch"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbls" "semua branch lokal"
+  _gfb_ex "gfbls kiki" "yang mengandung 'kiki'"
+  _gfb_ex "gfbls feature -r" "termasuk remote"
+  print
+}
+
+gfbls() {
+  local keyword="" include_remote=false
+
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbls_usage; return 0 ;;
+      -r|--remote) include_remote=true ;;
+      -*) _gfb_bad gfbls "Flag tidak dikenal: $1"; return 1 ;;
+      *) [ -z "$keyword" ] && keyword="$1" ;;
+    esac
+    shift
+  done
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+
+  _gfb_head "gfbls" "branch, urut terakhir dipakai"
+
+  # Fetch dulu supaya info remote fresh
+  _gfb_step "Fetch origin"
+  git fetch --quiet 2>/dev/null
+  _gfb_unwait
+
+  # keyword kosong = grep match semua baris
+  local local_branches remote_branches all_branches
+  local_branches=$(git branch --format='%(refname:short)' | grep -- "$keyword")
+  remote_branches=$(git branch -r --format='%(refname:short)' \
+    | grep -v '/HEAD$' | sed 's|^origin/||' | grep -- "$keyword")
+
+  if [ "$include_remote" = true ]; then
+    all_branches=$(printf "%s\n%s\n" "$local_branches" "$remote_branches" | grep -v '^$' | sort -u)
   else
     all_branches="$local_branches"
   fi
 
+  _gfb_kv "keyword" "${keyword:-${D}semua${N}}"
+  _gfb_kv "mode" "$([ "$include_remote" = true ] && echo "lokal + remote" || echo "lokal ${D}(tambah -r untuk remote)${N}")"
+
   if [ -z "$all_branches" ]; then
-    echo "⚠️  Tidak ada branch yang mengandung keyword: '$keyword'"
+    print
+    _gfb_warn "Tidak ada branch${keyword:+ yang mengandung '$keyword'}."
+    print
     return 0
   fi
-
-  local keyword_label="${keyword:-semua}"
-  local count=$(echo "$all_branches" | grep -c .)
-  local mode="local"
-  [ "$include_remote" = true ] && mode="local + remote"
-
-  echo ""
-  echo "🔍 Keyword  : $keyword_label"
-  echo "🌐 Mode     : $mode"
-  echo "📋 Ditemukan: $count branch"
-  echo ""
-
-  # Fetch dulu supaya info remote fresh
-  echo "🔄 Fetching origin..."
-  git fetch --quiet 2>/dev/null
 
   # Waktu checkout terakhir per branch dari reflog HEAD (baris pertama = terbaru)
   local checkout_times
@@ -658,7 +918,6 @@ gfbls() {
     | awk '/checkout: moving from/ && !seen[$NF]++ {sub(/.*@\{/, "", $1); sub(/\}.*/, "", $1); print $1, $NF}')
   local current_branch=$(git branch --show-current 2>/dev/null)
 
-  # Hitung waktu terakhir digunakan tiap branch, lalu urutkan terbaru di atas
   # last used = max(checkout terakhir, update ref terakhir di reflog, commit terakhir)
   local now=$(date +%s)
   local sorted_branches
@@ -683,13 +942,13 @@ gfbls() {
   # Awal hari ini (00:00) untuk menentukan "kemarin"
   local today_start=$(( now - 10#$(date +%H) * 3600 - 10#$(date +%M) * 60 - 10#$(date +%S) ))
 
-  local i=1
+  # Kumpulkan baris dulu supaya kolom bisa rata
+  local -a names=() syncs=() sync_colors=() whens=() marks=()
+  local name_w=0 ts branch has_local has_remote name sync sync_color
   while IFS=$'\t' read -r ts branch; do
     [ -z "$branch" ] && continue
 
-    # Format waktu relatif
-    local when=""
-    local diff=$(( now - ts ))
+    local when="" diff=$(( now - ts ))
     if [ "$branch" = "$current_branch" ]; then
       when="sedang aktif"
     elif [ "$ts" -le 0 ] 2>/dev/null; then
@@ -697,154 +956,147 @@ gfbls() {
     elif [ "$diff" -lt 60 ]; then
       when="baru saja"
     elif [ "$diff" -lt 3600 ]; then
-      when="$(( diff / 60 )) menit yang lalu"
+      when="$(( diff / 60 )) menit lalu"
     elif [ "$ts" -ge "$today_start" ]; then
-      when="$(( diff / 3600 )) jam yang lalu"
+      when="$(( diff / 3600 )) jam lalu"
     elif [ "$ts" -ge $(( today_start - 86400 )) ]; then
-      when="kemarin $(date -d "@$ts" +%H:%M 2>/dev/null || date -r "$ts" +%H:%M)"
+      when="kemarin $(date -r "$ts" +%H:%M)"
     elif [ "$ts" -ge $(( today_start - 6 * 86400 )) ]; then
-      when="$(( (today_start - ts) / 86400 + 1 )) hari yang lalu"
+      when="$(( (today_start - ts) / 86400 + 1 )) hari lalu"
     else
-      when=$(date -d "@$ts" '+%d %b %Y' 2>/dev/null || date -r "$ts" '+%d %b %Y')
+      when=$(date -r "$ts" '+%d %b %Y')
     fi
 
-    local has_local=false
-    local has_remote=false
-    echo "$local_branches"  | grep -qx "$branch" && has_local=true
-    echo "$remote_branches" | grep -qx "$branch" && has_remote=true
+    has_local=false has_remote=false name="$branch"
+    print -r -- "$local_branches"  | grep -qxF -- "$branch" && has_local=true
+    print -r -- "$remote_branches" | grep -qxF -- "$branch" && has_remote=true
 
     if $has_local && $has_remote; then
-      # Hitung ahead/behind
-      local ahead=$(git rev-list --count "origin/$branch".."$branch" 2>/dev/null)
-      local behind=$(git rev-list --count "$branch".."origin/$branch" 2>/dev/null)
-      local sync_info=""
-      [ "$ahead" -gt 0 ] 2>/dev/null  && sync_info+=" ↑${ahead}"
-      [ "$behind" -gt 0 ] 2>/dev/null && sync_info+=" ↓${behind}"
-      [ -z "$sync_info" ] && sync_info=" ✓"
-      echo "  [$i] $branch$sync_info  🕒 $when"
-      echo "       └─ origin/$branch"
+      local ahead=$(git rev-list --count "origin/$branch..$branch" 2>/dev/null)
+      local behind=$(git rev-list --count "$branch..origin/$branch" 2>/dev/null)
+      sync=""
+      (( ahead > 0 ))  && sync+="↑$ahead "
+      (( behind > 0 )) && sync+="↓$behind"
+      if [ -z "$sync" ]; then sync="✓ sinkron"; sync_color=$G; else sync_color=$Y; fi
     elif $has_local; then
-      echo "  [$i] $branch  (local only — belum pernah push)  🕒 $when"
+      sync="lokal saja"; sync_color=$D
     else
-      echo "  [$i] origin/$branch  (remote only — belum di-fetch lokal)  🕒 $when"
+      sync="remote saja"; sync_color=$C; name="origin/$branch"
     fi
-    ((i++))
+
+    names+=("$name"); syncs+=("${sync% }"); sync_colors+=("$sync_color"); whens+=("$when")
+    if [ "$branch" = "$current_branch" ]; then marks+=("${G}●${N}"); else marks+=(" "); fi
+    (( ${#name} > name_w )) && name_w=${#name}
   done <<< "$sorted_branches"
-  echo ""
-  echo "  ↑ = commit lokal belum di-push   ↓ = commit remote belum di-pull   ✓ = sinkron"
-  echo "  🕒 = terakhir digunakan (checkout / commit terakhir), terbaru di atas"
-  echo ""
+
+  (( name_w > 50 )) && name_w=50  # nama yang lebih panjang dibiarkan melewati kolom
+  _gfb_kv "total" "${#names} branch"
+  print
+
+  local i
+  for (( i = 1; i <= ${#names}; i++ )); do
+    printf "    ${D}%3d${N} %s %-${name_w}s  %s  ${D}%s${N}\n" \
+      $i "${marks[i]}" "${names[i]}" "${sync_colors[i]}${(r:11:)syncs[i]}${N}" "${whens[i]}"
+  done
+
+  print
+  _gfb_note "● aktif   ↑ belum di-push   ↓ belum di-pull   ✓ sinkron   urut: terakhir dipakai"
+  print
 }
 
-# Git Feature Branch PR Generator
-# Generate PR title & description dari commit log menggunakan Groq atau Gemini
-# Requires: GROQ_API_KEY atau GEMINI_API_KEY di environment
-#
-# contoh:
-# gfbpr master                              → groq, current branch vs master
-# gfbpr master kiki/feat/SP-829            → groq, branch spesifik
-# gfbpr master -p gemini                   → pakai Gemini
-# gfbpr master -p groq -m llama3-8b-8192   → groq, pilih model manual
-# gfbpr master -p gemini -m gemini-1.5-pro → gemini, pilih model manual
+# ════════════════════════════════════════════════════════════════════
+# gfbpr — generate PR title & description dari commit log via AI
+# Requires: GROQ_API_KEY atau GEMINI_API_KEY
+#   gfbpr master                              → groq, branch aktif vs master
+#   gfbpr master kiki/feat/SP-829             → branch spesifik
+#   gfbpr master -p gemini                    → pakai Gemini
+#   gfbpr master -p groq -m llama3-8b-8192    → pilih model manual
 #
 # Model Groq gratis:
-# openai/gpt-oss-120b  → default
-# qwen/qwen3.8-27b  → chat gpt bagus
-# llama-3.3-70b-versatile  → kualitas terbaik
-# llama3-8b-8192           → lebih cepat, ringan
-# gemma2-9b-it             → Google Gemma
-# qwen-qwq-32b             → Qwen reasoning
-# mistral-saba-24b         → Mistral
-#
+#   openai/gpt-oss-120b      → default
+#   qwen/qwen3.8-27b         → chat gpt bagus
+#   llama-3.3-70b-versatile  → kualitas terbaik
+#   llama3-8b-8192           → lebih cepat, ringan
+#   gemma2-9b-it             → Google Gemma
+#   qwen-qwq-32b             → Qwen reasoning
+#   mistral-saba-24b         → Mistral
 # Model Gemini gratis:
-# gemini-2.0-flash         → default, cepat & gratis 1500 req/hari
-# gemini-1.5-pro           → lebih powerful
-gfbpr() {
-  local base_branch="master"
-  local target_branch=$(git rev-parse --abbrev-ref HEAD)
-  local provider="groq"  # default provider
-  local model=""         # kosong = pakai default per provider
+#   gemini-2.0-flash         → default, cepat & gratis 1500 req/hari
+#   gemini-1.5-pro           → lebih powerful
+# ════════════════════════════════════════════════════════════════════
+_gfbpr_usage() {
+  _gfb_head "gfbpr" "generate judul & deskripsi PR via AI"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbpr [base-branch] [target-branch] [-p provider] [-m model]"
+  _gfb_note "default: base = master, target = branch aktif, provider = groq"
+  _gfb_note "base dikenali dari nama master / main / develop, sisanya dianggap target"
+  _gfb_sec "Opsi"
+  _gfb_opt "-p, --provider" "groq (default) atau gemini"
+  _gfb_opt "-m, --model" "pilih model manual"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbpr master" "branch aktif vs master"
+  _gfb_ex "gfbpr master kiki/feat/SP-829" "branch spesifik"
+  _gfb_ex "gfbpr master -p gemini" "pakai Gemini"
+  _gfb_ex "gfbpr master -p groq -m llama3-8b-8192" "pilih model"
+  _gfb_sec "Setup"
+  _gfb_ex 'export GROQ_API_KEY="gsk_xxxxxx"' "console.groq.com"
+  _gfb_ex 'export GEMINI_API_KEY="AIza_xxxxxx"' "aistudio.google.com/apikey"
+  print
+}
 
-  # Parsing argumen
+gfbpr() {
+  local base_branch="master" target_branch="" provider="groq" model=""
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -p|--provider)
-        provider="$2"
-        shift
-        ;;
-      -m|--model)
-        model="$2"
-        shift
-        ;;
+      -h|--help) _gfbpr_usage; return 0 ;;
+      -p|--provider) provider="$2"; shift ;;
+      -m|--model) model="$2"; shift ;;
+      -*) _gfb_bad gfbpr "Flag tidak dikenal: $1"; return 1 ;;
       *)
-        # "." berarti merefer ke branch aktif saat ini
-        local arg="$1"
-        [ "$arg" = "." ] && arg=$(git rev-parse --abbrev-ref HEAD)
-        if [[ "$arg" != -* ]] && git rev-parse --verify "$arg" &>/dev/null; then
+        local arg=$(_gfb_ref "$1")
+        if git rev-parse --verify -q "$arg" >/dev/null 2>&1; then
           if [[ "$arg" == "master" || "$arg" == "main" || "$arg" == "develop" ]]; then
             base_branch="$arg"
           else
             target_branch="$arg"
           fi
+        else
+          _gfb_warn "Branch '$1' tidak ditemukan, diabaikan."
         fi
         ;;
     esac
     shift
   done
 
-  # Set default model per provider
-  if [ -z "$model" ]; then
-    case "$provider" in
-      groq)   model="openai/gpt-oss-120b" ;;
-      gemini) model="gemini-2.0-flash" ;;
-      *)
-        echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
-        return 1
-        ;;
-    esac
-  fi
+  _gfb_repo || return 1
+  [ -z "$target_branch" ] && target_branch=$(_gfb_cur)
+  [ -z "$model" ] && { model=$(_gfb_ai_model "$provider") || return 1; }
+  _gfb_ai_key "$provider" || return 1
 
-  # Validasi API key sesuai provider
-  if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-    echo "❌ GROQ_API_KEY belum di-set."
-    echo "Daftar gratis di https://console.groq.com lalu:"
-    echo "  export GROQ_API_KEY=\"gsk_xxxxxx\""
-    return 1
-  fi
-  if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
-    echo "❌ GEMINI_API_KEY belum di-set."
-    echo "Daftar gratis di https://aistudio.google.com/apikey lalu:"
-    echo "  export GEMINI_API_KEY=\"AIza_xxxxxx\""
-    return 1
-  fi
-
-  # Validasi branch tidak sama
   if [ "$target_branch" = "$base_branch" ]; then
-    echo "⚠️  Target branch sama dengan base branch ($base_branch)."
+    _gfb_warn "Target branch sama dengan base branch ($base_branch)."
     return 1
   fi
 
-  # Ambil commit log
   local commits
-  commits=$(git log "$base_branch".."$target_branch" --oneline --no-decorate 2>/dev/null)
+  commits=$(git log "$base_branch..$target_branch" --oneline --no-decorate 2>/dev/null)
+  local commit_count=$(git rev-list --count "$base_branch..$target_branch" 2>/dev/null)
+
+  _gfb_head "gfbpr" "generate PR dari commit log"
+  _gfb_kv "target" "$target_branch"
+  _gfb_kv "base" "$base_branch"
+  _gfb_kv "commit" "${commit_count:-0}"
+  _gfb_kv "AI" "$provider · $model"
 
   if [ -z "$commits" ]; then
-    echo "✅ Tidak ada commit baru dibanding $base_branch."
+    print
+    _gfb_ok "Tidak ada commit baru dibanding $base_branch."
+    print
     return 0
   fi
 
-  local commit_count=$(echo "$commits" | wc -l | tr -d ' ')
-
-  echo ""
-  echo "🌿 Target branch : $target_branch"
-  echo "📌 Base branch   : $base_branch"
-  echo "📋 Total commit  : $commit_count"
-  echo "🤖 Provider      : $provider ($model)"
-  echo ""
-  echo "⏳ Generating PR..."
-  echo ""
-
-  # Buat prompt
   local prompt="You are an assistant that helps generate Pull Request (PR) titles and descriptions from a list of git commits.
 Your task:
 1. Analyze the provided commit list.
@@ -884,221 +1136,73 @@ When I paste a commit list, return only:
 Here are the commits:
 $commits"
 
-  local response result error
+  print
+  _gfb_step "Generating PR…"
+  local result
+  result=$(_gfb_ai_generate "$provider" "$model" "$prompt" 0.3) || return 1
+  _gfb_unwait
 
-  if [ "$provider" = "groq" ]; then
-    # python3 build JSON payload, curl yang kirim (urllib diblokir Cloudflare 403)
-    local json_payload
-    json_payload=$(python3 -c "
-import sys, json
-print(json.dumps({
-    'model': sys.argv[2],
-    'messages': [{'role': 'user', 'content': sys.argv[1]}],
-    'temperature': 0.3
-}))
-" "$prompt" "$model" 2>/dev/null)
+  _gfb_rule
+  print -r -- "$result" | sed 's/^/    /'
+  _gfb_rule
 
-    response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
-      -H "Authorization: Bearer $GROQ_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$json_payload")
-
-    error=$(python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[1])
-  print(d.get('error', {}).get('message', ''))
-except: pass
-" "$response" 2>/dev/null)
-
-    result=$(python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[1])
-  print(d['choices'][0]['message']['content'])
-except Exception as e:
-  print('❌ Parse error:', e)
-" "$response" 2>/dev/null)
-
-  elif [ "$provider" = "gemini" ]; then
-    # Build JSON payload untuk Gemini
-    local json_payload
-    json_payload=$(python3 -c "
-import sys, json
-print(json.dumps({
-    'contents': [{'parts': [{'text': sys.argv[1]}]}],
-    'generationConfig': {'temperature': 0.3}
-}))
-" "$prompt" 2>/dev/null)
-
-    response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$json_payload")
-
-    error=$(python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[1])
-  print(d.get('error', {}).get('message', ''))
-except: pass
-" "$response" 2>/dev/null)
-
-    result=$(python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[1])
-  print(d['candidates'][0]['content']['parts'][0]['text'])
-except Exception as e:
-  print('❌ Parse error:', e)
-" "$response" 2>/dev/null)
+  if _gfb_confirm "Copy ke clipboard?" n; then
+    _gfb_copy "$result"
   fi
-
-  if [ -n "$error" ]; then
-    echo "❌ API error: $error"
-    return 1
-  fi
-
-  echo "$result"
-  echo ""
-
-  # Tanya apakah mau copy ke clipboard
-  read "copy?📋 Copy ke clipboard? (y/N): "
-  if [[ "$copy" == "y" || "$copy" == "Y" ]]; then
-    echo "$result" | pbcopy
-    echo "✅ Sudah di-copy ke clipboard!"
-  fi
+  print
 }
 
-# Git Feature Branch Commit Message Generator
-# Generate commit message dari perubahan saat ini via Groq atau Gemini (gaya GitHub Copilot):
-#   - ada yang di-stage   → hanya pakai perubahan staged
+# ════════════════════════════════════════════════════════════════════
+# gfbcm — generate commit message dari perubahan saat ini via AI (gaya GitHub Copilot)
+#   - ada yang di-stage    → hanya pakai perubahan staged
 #   - tidak ada yang stage → pakai changes (unstaged + file baru/untracked)
-# Requires: GROQ_API_KEY atau GEMINI_API_KEY di environment
-#
-# contoh:
-# gfbcm                              → groq, staged (atau changes kalau belum ada yang di-stage)
-# gfbcm -p gemini                    → pakai Gemini
-# gfbcm -p groq -m llama3-8b-8192    → groq, pilih model manual
-
-# Kirim prompt ke provider AI, cetak hasilnya. Return 1 kalau error.
-# _gfb_ai_generate <provider> <model> <prompt>
-_gfb_ai_generate() {
-  local provider="$1" model="$2" prompt="$3"
-  local json_payload response
-
-  if [ "$provider" = "groq" ]; then
-    json_payload=$(python3 -c "
-import sys, json
-print(json.dumps({
-    'model': sys.argv[2],
-    'messages': [{'role': 'user', 'content': sys.argv[1]}],
-    'temperature': 0.2
-}))
-" "$prompt" "$model" 2>/dev/null)
-
-    response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
-      -H "Authorization: Bearer $GROQ_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$json_payload")
-  else
-    json_payload=$(python3 -c "
-import sys, json
-print(json.dumps({
-    'contents': [{'parts': [{'text': sys.argv[1]}]}],
-    'generationConfig': {'temperature': 0.2}
-}))
-" "$prompt" 2>/dev/null)
-
-    response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$json_payload")
-  fi
-
-  # Ambil teks hasil (hapus code fence kalau model membungkus pakai ```)
-  python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[2])
-except Exception:
-  print('❌ Response bukan JSON:', sys.argv[2][:300], file=sys.stderr); sys.exit(1)
-err = d.get('error')
-if err:
-  msg = err.get('message', err) if isinstance(err, dict) else err
-  print('❌ API error:', msg, file=sys.stderr); sys.exit(1)
-try:
-  if sys.argv[1] == 'groq':
-    text = d['choices'][0]['message']['content']
-  else:
-    text = d['candidates'][0]['content']['parts'][0]['text']
-except Exception as e:
-  print('❌ Parse error:', e, file=sys.stderr); sys.exit(1)
-lines = [l.rstrip() for l in text.strip().splitlines() if not l.strip().startswith('\`\`\`')]
-print('\n'.join(lines).strip())
-" "$provider" "$response"
+#   gfbcm
+#   gfbcm -p gemini
+#   gfbcm -p groq -m llama3-8b-8192
+# ════════════════════════════════════════════════════════════════════
+_gfbcm_usage() {
+  _gfb_head "gfbcm" "generate commit message via AI"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbcm [-p provider] [-m model]"
+  _gfb_note "sumber: staged kalau ada, selain itu changes (unstaged + untracked)"
+  _gfb_sec "Opsi"
+  _gfb_opt "-p, --provider" "groq (default) atau gemini"
+  _gfb_opt "-m, --model" "pilih model manual"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbcm" "groq"
+  _gfb_ex "gfbcm -p gemini" "pakai Gemini"
+  _gfb_sec "Tips"
+  _gfb_note "git add sebagian file dulu kalau message hanya untuk file itu."
+  print
 }
 
 gfbcm() {
-  local provider="groq"  # default provider
-  local model=""         # kosong = pakai default per provider
-  local max_diff_chars=12000
+  local provider="groq" model="" max_diff_chars=12000
 
-  # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
     case $1 in
+      -h|--help) _gfbcm_usage; return 0 ;;
       -p|--provider) provider="$2"; shift ;;
       -m|--model) model="$2"; shift ;;
-      -h|--help)
-        echo "Gunakan: gfbcm [-p provider] [-m model]"
-        echo "  Sumber: staged kalau ada, selain itu changes (unstaged + untracked)"
-        echo "  -p / --provider  → groq (default) atau gemini"
-        echo "  -m / --model     → pilih model manual"
-        return 0
-        ;;
-      *)
-        echo "❌ Argumen tidak dikenal: $1 (lihat: gfbcm -h)"
-        return 1
-        ;;
+      *) _gfb_bad gfbcm "Argumen tidak dikenal: $1"; return 1 ;;
     esac
     shift
   done
 
-  # Set default model per provider
-  if [ -z "$model" ]; then
-    case "$provider" in
-      groq)   model="openai/gpt-oss-120b" ;;
-      gemini) model="gemini-2.0-flash" ;;
-      *)
-        echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
-        return 1
-        ;;
-    esac
-  fi
+  [ -z "$model" ] && { model=$(_gfb_ai_model "$provider") || return 1; }
+  _gfb_ai_key "$provider" || return 1
+  _gfb_repo || return 1
 
-  # Validasi API key sesuai provider
-  if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-    echo "❌ GROQ_API_KEY belum di-set."
-    echo "Daftar gratis di https://console.groq.com lalu:"
-    echo "  export GROQ_API_KEY=\"gsk_xxxxxx\""
-    return 1
-  fi
-  if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
-    echo "❌ GEMINI_API_KEY belum di-set."
-    echo "Daftar gratis di https://aistudio.google.com/apikey lalu:"
-    echo "  export GEMINI_API_KEY=\"AIza_xxxxxx\""
-    return 1
-  fi
-
-  if ! git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "❌ Bukan di dalam git repository."
-    return 1
-  fi
+  local B D N G R Y C M; _gfb_pal
 
   # Lock file & file minified tetap muncul di daftar file, tapi isi diff-nya di-skip
   local -a noisy=(':(top,exclude)*.lock' ':(top,exclude)*package-lock.json' ':(top,exclude)*pnpm-lock.yaml'
                   ':(top,exclude)*.min.js' ':(top,exclude)*.min.css')
 
   # Selalu baca perubahan dari root repo, walau dipanggil dari subfolder
-  pushd -q "$(git rev-parse --show-toplevel)" || return 1
+  local __gfb_here=$PWD
+  builtin cd -q "$(git rev-parse --show-toplevel)" || return 1
 
   local source_label files diff
   local -a untracked=()
@@ -1107,7 +1211,7 @@ gfbcm() {
     files=$(git diff --cached --name-status)
     diff=$(git diff --cached --no-color -- ":/" "${noisy[@]}")
   else
-    source_label="changes (unstaged + untracked)"
+    source_label="changes ${D}(unstaged + untracked)${N}"
     untracked=(${(f)"$(git ls-files --others --exclude-standard)"})
     files=$(git diff --name-status)
     local f
@@ -1120,10 +1224,12 @@ gfbcm() {
       diff+=$'\n'"--- /dev/null"$'\n'"+++ b/$f"$'\n'"$(head -n 80 "$f" | sed 's/^/+/')"
     done
   fi
-  popd -q
+  builtin cd -q "$__gfb_here"
 
   if [ -z "$files" ]; then
-    echo "✅ Tidak ada perubahan (staged maupun unstaged)."
+    print
+    _gfb_ok "Tidak ada perubahan (staged maupun unstaged)."
+    print
     return 0
   fi
 
@@ -1133,20 +1239,16 @@ gfbcm() {
     truncated=true
   fi
 
-  local branch=$(git rev-parse --abbrev-ref HEAD)
+  local branch=$(_gfb_cur)
   local recent_commits=$(git log -10 --pretty=format:%s 2>/dev/null)
   local file_count=$(echo "$files" | wc -l | tr -d ' ')
 
-  echo ""
-  echo "🌿 Branch    : $branch"
-  echo "📂 Sumber    : $source_label"
-  echo "📋 Total file: $file_count$([ "$truncated" = true ] && echo " (diff dipotong ke $max_diff_chars karakter)")"
-  echo "🤖 Provider  : $provider ($model)"
-  echo ""
-  echo "⏳ Generating commit message..."
-  echo ""
+  _gfb_head "gfbcm" "generate commit message"
+  _gfb_kv "branch" "$branch"
+  _gfb_kv "sumber" "$source_label"
+  _gfb_kv "file" "$file_count$([ "$truncated" = true ] && echo "  ${D}(diff dipotong ke $max_diff_chars karakter)${N}")"
+  _gfb_kv "AI" "$provider · $model"
 
-  # Buat prompt
   local prompt="You are an assistant that writes git commit messages, like GitHub Copilot's commit message generator.
 Analyze the diff below and write ONE commit message describing these changes.
 Rules:
@@ -1169,61 +1271,50 @@ $files
 Diff:
 $diff"
 
+  print
+  _gfb_step "Generating commit message…"
   local result
   result=$(_gfb_ai_generate "$provider" "$model" "$prompt") || return 1
+  _gfb_unwait
 
-  echo "$result"
-  echo ""
+  _gfb_rule
+  print -r -- "$result" | sed 's/^/    /'
+  _gfb_rule
 
-  # Tanya apakah mau copy ke clipboard
-  read "copy?📋 Copy ke clipboard? (y/N): "
-  if [[ "$copy" == "y" || "$copy" == "Y" ]]; then
-    printf '%s' "$result" | pbcopy
-    echo "✅ Sudah di-copy ke clipboard!"
+  if _gfb_confirm "Copy ke clipboard?" n; then
+    _gfb_copy "$result"
   fi
+  print
 }
 
-# Git Feature Branch Status
-# Seperti git status, tapi lebih lengkap:
+# ════════════════════════════════════════════════════════════════════
+# gfbstatus — git status versi lengkap:
 #   - branch, upstream (ahead/behind), posisi vs base branch, fetch terakhir
 #   - operasi yang sedang berjalan (merge/rebase/cherry-pick/revert/bisect)
 #   - staged / changes / untracked / conflict + jumlah baris (+/-)
 #   - tanda ◐ untuk file yang sebagian di-stage
 #   - peringatan file sensitif (.env, *.pem, key, …) / besar di staged & untracked
-#   - stash, commit belum di-push / belum di-pull
-#   - saran langkah berikutnya
-#
-# contoh:
-# gfbstatus              → base otomatis (master, lalu main)
-# gfbstatus -b develop   → bandingkan dengan develop
-# gfbstatus -f           → git fetch dulu supaya ahead/behind akurat
-# gfbstatus -a           → tampilkan semua file (tanpa dipotong)
-# gfbstatus -w           → mode watch, refresh tiap 3 detik (gfbstatus -w 5 → tiap 5 detik)
-# gfbstatus -r           → + recap AI: sebelumnya mengerjakan apa & kapan (groq)
-# gfbstatus -r -p gemini → recap pakai Gemini
-
-# Ubah selisih detik jadi teks relatif, mis. "3 jam lalu"
-_gfb_ago() {
-  local s=$1
-  if   (( s < 60 ));    then echo "baru saja"
-  elif (( s < 3600 ));  then echo "$(( s / 60 )) menit lalu"
-  elif (( s < 86400 )); then echo "$(( s / 3600 )) jam lalu"
-  else                       echo "$(( s / 86400 )) hari lalu"
-  fi
-}
+#   - stash, commit belum di-push / belum di-pull, saran langkah berikutnya
+#   gfbstatus              → base otomatis (master, lalu main)
+#   gfbstatus -b develop   → bandingkan dengan develop
+#   gfbstatus -f           → git fetch dulu
+#   gfbstatus -a           → semua file (tanpa dipotong)
+#   gfbstatus -w [detik]   → mode watch
+#   gfbstatus -r           → + recap AI (groq), -p gemini untuk Gemini
+# ════════════════════════════════════════════════════════════════════
 
 # Cetak daftar file dari "git diff --name-status" + "--numstat" (urutannya sama)
 # File yang ada di <partial> (daftar path, per baris) ditandai "◐ sebagian"
 # _gfb_status_files <limit> <name-status> <numstat> [partial]
 _gfb_status_files() {
+  local B D N G R Y C M; _gfb_pal
   local limit=$1
   local -a ns=(${(f)2}) nums=(${(f)3}) partial=(${(f)4})
   local i st file add del counts color
-  local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' D=$'\e[2m' N=$'\e[0m'
 
   for (( i = 1; i <= ${#ns}; i++ )); do
     if (( limit > 0 && i > limit )); then
-      echo "   ${D}… +$(( ${#ns} - limit )) file lainnya (pakai -a untuk semua)${N}"
+      print -r -- "    ${D}… +$(( ${#ns} - limit )) file lainnya (pakai -a untuk semua)${N}"
       break
     fi
     st=${ns[i]%%$'\t'*}
@@ -1242,7 +1333,7 @@ _gfb_status_files() {
       (( del > 0 )) && counts+="${R}-$del${N}"
     fi
     (( ${partial[(Ie)${ns[i]##*$'\t'}]} )) && counts+=" ${Y}◐ sebagian${N}"
-    printf "   %s%-2s%s %-55s %s\n" "$color" "${st[1]}" "$N" "$file" "$counts"
+    printf "    %s%s%s  %-52s %s\n" "$color" "${st[1]}" "$N" "$file" "$counts"
   done
 }
 
@@ -1257,20 +1348,19 @@ _gfb_status_sum() {
 # _gfb_status_recap <provider> <model> [base-ref]
 _gfb_status_recap() {
   local provider="$1" model="$2" base_ref="$3"
-  local D=$'\e[2m' B=$'\e[1m' N=$'\e[0m'
   local max_diff_chars=8000
   local now=$(date +%s)
 
-  if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-    echo "❌ GROQ_API_KEY belum di-set, recap dilewati."; return 1
-  fi
-  if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
-    echo "❌ GEMINI_API_KEY belum di-set, recap dilewati."; return 1
+  _gfb_sec "Recap AI" "$provider · $model"
+  if ! _gfb_ai_key "$provider" quiet; then
+    _gfb_warn "API key untuk $provider belum di-set, recap dilewati."
+    return 1
   fi
 
-  pushd -q "$(git rev-parse --show-toplevel)" || return 1
+  local __gfb_here=$PWD
+  builtin cd -q "$(git rev-parse --show-toplevel)" || return 1
 
-  local branch=$(git rev-parse --abbrev-ref HEAD)
+  local branch=$(_gfb_cur)
   local fmt='%h | %ad | %an | %s'
   local datefmt='--date=format:%Y-%m-%d %H:%M'
 
@@ -1314,7 +1404,7 @@ _gfb_status_recap() {
   local reflog=$(git reflog -n 15 --date=format:'%Y-%m-%d %H:%M' --format='%gd | %gs' 2>/dev/null)
   local stashes=$(git stash list -n 5 --format='%gd | %cd | %gs' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)
 
-  popd -q
+  builtin cd -q "$__gfb_here"
 
   local prompt="You help a developer who forgot what they were working on in this git repository.
 Using the context below, write a short recap IN INDONESIAN (casual but clear) so they can resume quickly.
@@ -1360,28 +1450,43 @@ ${reflog:-none}
 Stashes:
 ${stashes:-none}"
 
-  echo "🧠 ${B}Recap (AI • $provider/$model)${N}  ${D}⏳ generating...${N}"
+  _gfb_step "Generating recap…"
   local result
   result=$(_gfb_ai_generate "$provider" "$model" "$prompt") || return 1
-  # Hapus baris "generating..." lalu tampilkan hasil
-  printf '\e[1A\e[2K'
-  echo "🧠 ${B}Recap (AI • $provider/$model)${N}"
-  print -r -- "$result" | sed 's/^/   /'
+  _gfb_unwait
+  print -r -- "$result" | sed 's/^/    /'
+}
+
+_gfbstatus_usage() {
+  _gfb_head "gfbstatus" "git status versi lengkap"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbstatus [-b base] [-f] [-a] [-w [detik]] [-r [-p provider] [-m model]]"
+  _gfb_sec "Opsi"
+  _gfb_opt "-b, --base" "base pembanding (default: master, lalu main)"
+  _gfb_opt "-f, --fetch" "git fetch dulu supaya ↑↓ akurat"
+  _gfb_opt "-a, --all" "tampilkan semua file (default maks 20 per bagian)"
+  _gfb_opt "-w, --watch [s]" "refresh otomatis (default 3 detik), Ctrl+C keluar"
+  _gfb_opt "-r, --recap" "recap AI: sebelumnya mengerjakan apa & kapan"
+  _gfb_opt "-p, -m" "provider (groq/gemini) & model untuk -r"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Isi"
+  _gfb_note "branch & upstream (↑↓), posisi vs base, fetch terakhir, merge/rebase berjalan,"
+  _gfb_note "conflict, staged, changes, untracked, ◐ sebagian di-stage, file sensitif/besar,"
+  _gfb_note "stash, commit belum push/pull, dan saran langkah berikut."
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbstatus -f" "fetch dulu"
+  _gfb_ex "gfbstatus -w 5" "refresh tiap 5 detik"
+  _gfb_ex "gfbstatus -r -p gemini" "status + recap via Gemini"
+  print
 }
 
 gfbstatus() {
-  local base_branch=""
-  local do_fetch=false
-  local limit=20
-  local watch=0
+  local base_branch="" do_fetch=false limit=20 watch=0 recap=false provider="groq" model=""
   local large_mb=5  # file staged/untracked di atas ukuran ini diberi peringatan
-  local recap=false
-  local provider="groq"  # untuk -r
-  local model=""
 
-  # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
     case $1 in
+      -h|--help) _gfbstatus_usage; return 0 ;;
       -b|--base) base_branch="$2"; shift ;;
       -f|--fetch) do_fetch=true ;;
       -a|--all) limit=0 ;;
@@ -1392,47 +1497,21 @@ gfbstatus() {
       -r|--recap) recap=true ;;
       -p|--provider) provider="$2"; shift ;;
       -m|--model) model="$2"; shift ;;
-      -h|--help)
-        echo "Gunakan: gfbstatus [-b base-branch] [-f] [-a] [-w [detik]] [-r [-p provider] [-m model]]"
-        echo "  -b / --base   → base branch pembanding (default: master, lalu main)"
-        echo "  -f / --fetch  → git fetch dulu supaya ahead/behind akurat"
-        echo "  -a / --all    → tampilkan semua file (default maks $limit per bagian)"
-        echo "  -w / --watch  → refresh otomatis (default tiap 3 detik), Ctrl+C untuk keluar"
-        echo "  -r / --recap  → recap AI: sebelumnya mengerjakan apa & kapan"
-        echo "  -p / --provider → groq (default) atau gemini, untuk -r"
-        echo "  -m / --model    → pilih model manual, untuk -r"
-        return 0
-        ;;
-      *)
-        echo "❌ Argumen tidak dikenal: $1 (lihat: gfbstatus -h)"
-        return 1
-        ;;
+      *) _gfb_bad gfbstatus "Argumen tidak dikenal: $1"; return 1 ;;
     esac
     shift
   done
 
-  if ! git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "❌ Bukan di dalam git repository."
-    return 1
-  fi
-
-  local G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' B=$'\e[1m' D=$'\e[2m' N=$'\e[0m'
+  _gfb_repo || return 1
+  local B D N G R Y C M; _gfb_pal
+  base_branch=$(_gfb_ref "$base_branch")
 
   if [ "$recap" = true ]; then
     if (( watch > 0 )); then
-      echo "❌ -r tidak bisa digabung dengan -w (setiap refresh akan memanggil AI)."
+      _gfb_err "-r tidak bisa digabung dengan -w (setiap refresh akan memanggil AI)."
       return 1
     fi
-    if [ -z "$model" ]; then
-      case "$provider" in
-        groq)   model="openai/gpt-oss-120b" ;;
-        gemini) model="gemini-2.0-flash" ;;
-        *)
-          echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
-          return 1
-          ;;
-      esac
-    fi
+    [ -z "$model" ] && { model=$(_gfb_ai_model "$provider") || return 1; }
   fi
 
   # Mode watch: jalankan ulang gfbstatus terus-menerus (fetch hanya di putaran pertama)
@@ -1443,13 +1522,13 @@ gfbstatus() {
     local out first=true
     while true; do
       if [[ "$first" = true && "$do_fetch" = true ]]; then
-        out=$(gfbstatus "${pass[@]}" -f 2>&1)
+        out=$(GFB_FORCE_COLOR=1 gfbstatus "${pass[@]}" -f 2>&1)
       else
-        out=$(gfbstatus "${pass[@]}" 2>&1)
+        out=$(GFB_FORCE_COLOR=1 gfbstatus "${pass[@]}" 2>&1)
       fi
       clear
       print -r -- "$out"
-      echo "${D}🔁 refresh tiap ${watch} detik • $(date +%H:%M:%S) • Ctrl+C untuk keluar${N}"
+      print -r -- "  ${D}↻ refresh tiap ${watch} detik · $(date +%H:%M:%S) · Ctrl+C untuk keluar${N}"
       first=false
       sleep $watch || break
     done
@@ -1457,38 +1536,44 @@ gfbstatus() {
   fi
 
   # Selalu baca dari root repo, walau dipanggil dari subfolder
-  pushd -q "$(git rev-parse --show-toplevel)" || return 1
-
-  if [ "$do_fetch" = true ]; then
-    echo "🔄 Fetching..."
-    git fetch --quiet --prune || echo "⚠️  Fetch gagal, data remote mungkin tidak terbaru."
-  fi
+  local __gfb_here=$PWD
+  builtin cd -q "$(git rev-parse --show-toplevel)" || return 1
 
   local repo=${PWD:t}
-  local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  _gfb_head "gfbstatus" "$repo"
+
+  if [ "$do_fetch" = true ]; then
+    _gfb_step "Fetch origin"
+    if git fetch --quiet --prune; then
+      _gfb_unwait
+    else
+      _gfb_warn "Fetch gagal, data remote mungkin tidak terbaru."
+    fi
+  fi
+
+  local branch=$(_gfb_cur)
   local upstream=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)
   local -a hints=()
 
-  # ── Header: branch & upstream ─────────────────────────────
-  echo ""
+  # ── Header: branch & upstream ──
   if [ "$branch" = "HEAD" ]; then
-    echo "📍 ${B}$repo${N}  •  ${R}detached HEAD${N} di $(git rev-parse --short HEAD)"
+    _gfb_kv "branch" "${R}detached HEAD${N} di $(git rev-parse --short HEAD)"
     hints+=("Detached HEAD → buat branch: git switch -c <nama-branch>")
   elif [ -n "$upstream" ]; then
     local lr=(${=$(git rev-list --left-right --count "$upstream"...HEAD 2>/dev/null)})
     local behind=${lr[1]:-0} ahead=${lr[2]:-0}
     local sync="${G}✓ sinkron${N}"
     (( ahead > 0 || behind > 0 )) && sync="${G}↑$ahead${N} ${R}↓$behind${N}"
-    echo "📍 ${B}$repo${N}  •  🌿 ${B}$branch${N} → $upstream  $sync"
+    _gfb_kv "branch" "${B}$branch${N} ${D}→ $upstream${N}  $sync"
   else
-    echo "📍 ${B}$repo${N}  •  🌿 ${B}$branch${N}  ${Y}(belum ada upstream)${N}"
+    _gfb_kv "branch" "${B}$branch${N}  ${Y}belum ada upstream${N}"
     hints+=("Belum ada upstream → git push -u origin $branch")
   fi
 
   if git rev-parse --verify -q HEAD >/dev/null; then
-    echo "   HEAD  : $(git log -1 --format="${Y}%h${N} %s ${D}(%cr, %an)${N}")"
+    _gfb_kv "HEAD" "$(git log -1 --format="${Y}%h${N} %s ${D}· %cr · %an${N}")"
   else
-    echo "   HEAD  : ${D}belum ada commit${N}"
+    _gfb_kv "HEAD" "${D}belum ada commit${N}"
   fi
 
   # Posisi vs base branch (pakai origin/<base> kalau ada, lebih up to date)
@@ -1500,12 +1585,13 @@ gfbstatus() {
       fi
     done
   fi
+  local base_ref=""
   if [[ -n "$base_branch" && "$branch" != "$base_branch" ]]; then
-    local base_ref=$base_branch
+    base_ref=$base_branch
     git rev-parse --verify -q "origin/$base_branch" >/dev/null && base_ref="origin/$base_branch"
     local blr=(${=$(git rev-list --left-right --count "$base_ref"...HEAD 2>/dev/null)})
     if (( ${#blr} == 2 )); then
-      echo "   Base  : $base_ref → ${G}$blr[2] commit di depan${N}, ${R}$blr[1] di belakang${N}"
+      _gfb_kv "base" "$base_ref  ${G}$blr[2] di depan${N} ${D}·${N} ${R}$blr[1] di belakang${N}"
       (( blr[1] > 0 )) && hints+=("Tertinggal $blr[1] commit dari $base_ref → git merge $base_ref (atau rebase)")
     fi
   fi
@@ -1513,13 +1599,13 @@ gfbstatus() {
   local fetch_head=$(git rev-parse --git-path FETCH_HEAD)
   if [ -f "$fetch_head" ]; then
     local since=$(( $(date +%s) - $(stat -f %m "$fetch_head") ))
-    echo "   Fetch : $(_gfb_ago $since)"
+    _gfb_kv "fetch" "$(_gfb_ago $since)"
     (( since > 86400 )) && hints+=("Fetch terakhir sudah lama → gfbstatus -f")
   else
-    echo "   Fetch : ${D}belum pernah${N}"
+    _gfb_kv "fetch" "${D}belum pernah${N}"
   fi
 
-  # ── Operasi yang sedang berjalan ──────────────────────────
+  # ── Operasi yang sedang berjalan ──
   local op=""
   if   [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
     op="REBASE";      hints+=("Rebase berjalan → git rebase --continue / --abort")
@@ -1532,9 +1618,9 @@ gfbstatus() {
   elif [ -f "$(git rev-parse --git-path BISECT_LOG)" ]; then
     op="BISECT";      hints+=("Bisect berjalan → git bisect reset kalau sudah selesai")
   fi
-  [ -n "$op" ] && echo "" && echo "⚠️  ${R}${B}Sedang $op${N}"
+  [ -n "$op" ] && { print; _gfb_warn "${R}${B}Sedang $op${N}"; }
 
-  # ── File ─────────────────────────────────────────────────
+  # ── File ──
   local conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null)
   # File conflict hanya ditampilkan di bagian Conflict, bukan di Staged/Changes
   local -a skip=(":/")
@@ -1553,44 +1639,46 @@ gfbstatus() {
 
   if [ -n "$conflicts" ]; then
     local -a cf=(${(f)conflicts})
-    echo ""
-    echo "⚔️  ${R}${B}Conflict (${#cf} file)${N}"
-    printf "   ${R}U${N}  %s\n" "${cf[@]}"
+    _gfb_sec "${R}Conflict${N}" "${#cf} file"
+    local f
+    for f in "${cf[@]}"; do print -r -- "    ${R}U${N}  $f"; done
     hints+=("Selesaikan conflict → edit file, lalu git add <file>")
   fi
 
-  echo ""
-  if [ -n "$staged_ns" ]; then
-    local -a sl=(${(f)staged_ns})
-    echo "✅ ${G}${B}Staged (${#sl} file, $(_gfb_status_sum "$staged_num"))${N}  ${D}→ akan masuk commit${N}"
-    _gfb_status_files $limit "$staged_ns" "$staged_num" "$partial"
-    hints+=("Ada yang di-stage → gfbcm untuk generate commit message")
+  if [[ -z "$conflicts" && -z "$staged_ns" && -z "$changes_ns" && -z "$untracked" ]]; then
+    print
+    _gfb_ok "Working tree bersih"
   else
-    echo "✅ ${D}Staged: kosong${N}"
-  fi
+    if [ -n "$staged_ns" ]; then
+      local -a sl=(${(f)staged_ns})
+      _gfb_sec "${G}Staged${N}" "${#sl} file · $(_gfb_status_sum "$staged_num") · akan masuk commit"
+      _gfb_status_files $limit "$staged_ns" "$staged_num" "$partial"
+      hints+=("Ada yang di-stage → gfbcm untuk generate commit message")
+    else
+      _gfb_sec "${D}Staged${N}" "kosong"
+    fi
 
-  echo ""
-  if [ -n "$changes_ns" ]; then
-    local -a cl=(${(f)changes_ns})
-    echo "✏️  ${Y}${B}Changes (${#cl} file, $(_gfb_status_sum "$changes_num"))${N}  ${D}→ belum di-stage${N}"
-    _gfb_status_files $limit "$changes_ns" "$changes_num" "$partial"
-    [ -n "$partial" ] && hints+=("◐ = sebagian di-stage → git add <file> kalau sisa perubahannya juga mau ikut commit")
-  else
-    echo "✏️  ${D}Changes: kosong${N}"
-  fi
+    if [ -n "$changes_ns" ]; then
+      local -a cl=(${(f)changes_ns})
+      _gfb_sec "${Y}Changes${N}" "${#cl} file · $(_gfb_status_sum "$changes_num") · belum di-stage"
+      _gfb_status_files $limit "$changes_ns" "$changes_num" "$partial"
+      [ -n "$partial" ] && hints+=("◐ = sebagian di-stage → git add <file> kalau sisanya juga mau ikut commit")
+    else
+      _gfb_sec "${D}Changes${N}" "kosong"
+    fi
 
-  if [ -n "$untracked" ]; then
-    local -a ul=(${(f)untracked})
-    echo ""
-    echo "❓ ${C}${B}Untracked (${#ul} file)${N}  ${D}→ file baru, belum di-track${N}"
-    local i
-    for (( i = 1; i <= ${#ul}; i++ )); do
-      if (( limit > 0 && i > limit )); then
-        echo "   ${D}… +$(( ${#ul} - limit )) file lainnya (pakai -a untuk semua)${N}"
-        break
-      fi
-      echo "   ${C}?${N}  ${ul[i]}"
-    done
+    if [ -n "$untracked" ]; then
+      local -a ul=(${(f)untracked})
+      _gfb_sec "${C}Untracked${N}" "${#ul} file · file baru, belum di-track"
+      local i
+      for (( i = 1; i <= ${#ul}; i++ )); do
+        if (( limit > 0 && i > limit )); then
+          print -r -- "    ${D}… +$(( ${#ul} - limit )) file lainnya (pakai -a untuk semua)${N}"
+          break
+        fi
+        print -r -- "    ${C}?${N}  ${ul[i]}"
+      done
+    fi
   fi
 
   if [[ -z "$staged_ns" && ( -n "$changes_ns" || -n "$untracked" ) ]]; then
@@ -1609,1039 +1697,669 @@ gfbstatus() {
     case $wbase in
       .env.example|.env.sample|.env.template|*.pub) ;;
       .env|.env.*|*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|id_rsa*|id_ed25519*|id_ecdsa*|credentials*.json|service-account*.json|*.sqlite|*.sqlite3)
-        warns+=("${R}🔐 $wfile${N} ${D}($kind)${N} kemungkinan berisi secret")
+        warns+=("${R}secret${N}  $wfile ${D}($kind) — kemungkinan berisi secret${N}")
         ;;
     esac
     if [ -f "$wfile" ]; then
       wsize=$(stat -f %z "$wfile" 2>/dev/null)
       if (( wsize > large_mb * 1024 * 1024 )); then
-        warns+=("${Y}🐘 $wfile${N} ${D}($kind)${N} berukuran $(( wsize / 1024 / 1024 )) MB")
+        warns+=("${Y}besar${N}   $wfile ${D}($kind) — $(( wsize / 1024 / 1024 )) MB${N}")
       fi
     fi
   done
   if (( ${#warns} )); then
-    echo ""
-    echo "🚨 ${R}${B}Perhatian (${#warns})${N}"
-    printf "   %s\n" "${warns[@]}"
+    _gfb_sec "${R}Perhatian${N}" "${#warns}"
+    printf "    %s\n" "${warns[@]}"
     hints+=("File sensitif/besar → tambahkan ke .gitignore (kalau sudah staged: git restore --staged <file>)")
   fi
 
-  # ── Stash ────────────────────────────────────────────────
+  # ── Stash ──
   local stash_count=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
   if (( stash_count > 0 )); then
-    echo ""
-    echo "📦 ${B}Stash ($stash_count)${N}  ${D}terakhir: $(git stash list -1 --format='%gs (%cr)')${N}"
+    _gfb_sec "Stash" "$stash_count"
+    print -r -- "    ${D}terakhir:${N} $(git stash list -1 --format='%gs · %cr')"
   fi
 
-  # ── Commit belum di-push / belum di-pull ─────────────────
+  # ── Commit belum di-push / belum di-pull ──
   if [ -n "$upstream" ]; then
-    local unpushed=$(git log --format="${Y}%h${N} %s ${D}(%cr)${N}" "$upstream"..HEAD 2>/dev/null)
-    local unpulled=$(git log --format="${Y}%h${N} %s ${D}(%cr, %an)${N}" HEAD.."$upstream" 2>/dev/null)
+    local unpushed=$(git log --format="    ${Y}%h${N}  %s ${D}· %cr${N}" "$upstream"..HEAD 2>/dev/null)
+    local unpulled=$(git log --format="    ${Y}%h${N}  %s ${D}· %cr · %an${N}" HEAD.."$upstream" 2>/dev/null)
     if [ -n "$unpushed" ]; then
       local -a up=(${(f)unpushed})
-      echo ""
-      echo "⬆️  ${G}${B}Belum di-push (${#up} commit)${N}"
-      printf "   %s\n" "${up[1,10]}"
-      (( ${#up} > 10 )) && echo "   ${D}… +$(( ${#up} - 10 )) commit lainnya${N}"
+      _gfb_sec "${G}Belum di-push${N}" "${#up} commit"
+      printf "%s\n" "${up[1,10]}"
+      (( ${#up} > 10 )) && print -r -- "    ${D}… +$(( ${#up} - 10 )) commit lainnya${N}"
       hints+=("Ada commit belum di-push → git push")
     fi
     if [ -n "$unpulled" ]; then
       local -a dn=(${(f)unpulled})
-      echo ""
-      echo "⬇️  ${R}${B}Belum di-pull (${#dn} commit)${N}"
-      printf "   %s\n" "${dn[1,10]}"
-      (( ${#dn} > 10 )) && echo "   ${D}… +$(( ${#dn} - 10 )) commit lainnya${N}"
+      _gfb_sec "${R}Belum di-pull${N}" "${#dn} commit"
+      printf "%s\n" "${dn[1,10]}"
+      (( ${#dn} > 10 )) && print -r -- "    ${D}… +$(( ${#dn} - 10 )) commit lainnya${N}"
       hints+=("Ada commit baru di remote → git pull")
     fi
   fi
 
-  popd -q
+  builtin cd -q "$__gfb_here"
 
-  # ── Saran ────────────────────────────────────────────────
-  echo ""
+  # ── Saran ──
   if (( ${#hints} )); then
-    echo "💡 ${B}Langkah berikut:${N}"
-    printf "   • %s\n" "${hints[@]}"
+    _gfb_sec "Langkah berikut"
+    local h
+    for h in "${hints[@]}"; do _gfb_bullet "$h"; done
   else
-    echo "✨ ${G}Bersih & sinkron, tidak ada yang perlu dilakukan.${N}"
+    print
+    _gfb_ok "${G}Bersih & sinkron, tidak ada yang perlu dilakukan.${N}"
   fi
-  echo ""
 
-  # ── Recap AI (opsional, -r) ──────────────────────────────
-  if [ "$recap" = true ]; then
-    _gfb_status_recap "$provider" "$model" "$base_ref"
-    echo ""
-  fi
+  # ── Recap AI (opsional, -r) ──
+  [ "$recap" = true ] && _gfb_status_recap "$provider" "$model" "$base_ref"
+  print
 }
 
-# Git Feature Branch Lark Link
-# Generate link Lark (Story & Issue) berdasarkan ID yang terkandung di nama branch
-# ID biasanya berupa angka yang menempel di nama branch, misal:
-# kiki/feat/split-payment-23729368
-#
-# Karena satu ID bisa jadi Story (feat) atau Issue (fix), function ini akan
-# selalu menampilkan KEDUA kemungkinan link, diurutkan mana yang lebih mungkin
-# berdasarkan nama branch (mengandung "fix" → Issue duluan, selain itu → Story duluan).
-#
-# Base URL Lark diatur lewat variable LARK_STORY_BASE_URL & LARK_ISSUE_BASE_URL
-# di dalam function ini, jadi kalau formatnya berubah tinggal ubah di sini saja.
-#
-# Deteksi ID pakai AI (Groq/Gemini), sama seperti gfbpr.
-# Kalau API key belum di-set atau AI tidak menemukan angka, akan fallback ke
-# regex sederhana (ambil angka dari nama branch). Kalau tetap tidak ketemu,
-# user akan diminta input ID secara manual.
-#
-# contoh:
-# gfblarklink                                  → deteksi ID dari branch aktif
-# gfblarklink kiki/feat/split-payment-23729368 → deteksi ID dari branch tertentu
-# gfblarklink -i 23687966                      → langsung pakai ID manual
-# gfblarklink . -p gemini                      → pakai Gemini untuk deteksi
+# ════════════════════════════════════════════════════════════════════
+# gfblarklink — link Lark (Story & Issue) dari ID di nama branch
+# Satu ID bisa Story (feat) atau Issue (fix), jadi selalu tampil KEDUA link,
+# diurutkan mana yang lebih mungkin (nama branch mengandung "fix" → Issue duluan).
+# Deteksi ID: AI (Groq/Gemini) → fallback angka di nama branch → input manual.
+#   gfblarklink                                  → dari branch aktif
+#   gfblarklink kiki/feat/split-payment-23729368 → dari branch tertentu
+#   gfblarklink -i 23687966                      → ID manual
+#   gfblarklink @ -p gemini                      → pakai Gemini
+# ════════════════════════════════════════════════════════════════════
+_gfblarklink_usage() {
+  _gfb_head "gfblarklink" "link Lark (Story & Issue) dari nama branch"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfblarklink [branch] [-i id] [-p provider] [-m model]"
+  _gfb_note "default: branch aktif, provider groq"
+  _gfb_sec "Opsi"
+  _gfb_opt "-i, --id" "pakai ID manual, skip deteksi"
+  _gfb_opt "-p, --provider" "groq (default) atau gemini, untuk deteksi ID"
+  _gfb_opt "-m, --model" "pilih model manual"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfblarklink" "dari branch aktif"
+  _gfb_ex "gfblarklink kiki/feat/split-payment-23729368" "dari branch tertentu"
+  _gfb_ex "gfblarklink -i 23687966" "ID manual"
+  _gfb_sec "Catatan"
+  _gfb_note "Selalu tampil 2 link; nama branch mengandung 'fix' → Issue duluan."
+  _gfb_note "Kalau ID tidak ketemu otomatis, kamu akan diminta input manual."
+  print
+}
+
 gfblarklink() {
   # Base URL Lark, ubah di sini kalau formatnya berubah
   local LARK_STORY_BASE_URL="https://project.larksuite.com/spd/story/detail/"
   local LARK_ISSUE_BASE_URL="https://project.larksuite.com/spd/issue/detail/"
 
-  local branch_name=""
-  local manual_id=""
-  local provider="groq"  # default provider
-  local model=""         # kosong = pakai default per provider
+  local branch_name="" manual_id="" provider="groq" model=""
 
-  # Parsing argumen
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -i|--id)
-        manual_id="$2"
-        shift
-        ;;
-      -p|--provider)
-        provider="$2"
-        shift
-        ;;
-      -m|--model)
-        model="$2"
-        shift
-        ;;
-      *)
-        if [ -z "$branch_name" ]; then
-          branch_name="$1"
-        fi
-        ;;
+      -h|--help) _gfblarklink_usage; return 0 ;;
+      -i|--id) manual_id="$2"; shift ;;
+      -p|--provider) provider="$2"; shift ;;
+      -m|--model) model="$2"; shift ;;
+      -*) _gfb_bad gfblarklink "Flag tidak dikenal: $1"; return 1 ;;
+      *) [ -z "$branch_name" ] && branch_name="$1" ;;
     esac
     shift
   done
 
-  # Default branch = branch aktif saat ini, "." juga berarti branch aktif
-  [ -z "$branch_name" ] && branch_name=$(git rev-parse --abbrev-ref HEAD)
-  [ "$branch_name" = "." ] && branch_name=$(git rev-parse --abbrev-ref HEAD)
+  local B D N G R Y C M; _gfb_pal
+  branch_name=$(_gfb_ref "${branch_name:-@}")
 
-  local prd_id="$manual_id"
+  _gfb_head "gfblarklink" "link Lark dari nama branch"
+  _gfb_kv "branch" "$branch_name"
+
+  local prd_id="$manual_id" id_source="manual (-i)"
 
   # Kalau user sudah kasih ID manual lewat -i, skip semua deteksi
   if [ -z "$prd_id" ]; then
-    echo "🔍 Mencari ID PRD di nama branch: $branch_name"
+    [ -z "$model" ] && { model=$(_gfb_ai_model "$provider") || return 1; }
 
-    # Set default model per provider
-    if [ -z "$model" ]; then
-      case "$provider" in
-        groq)   model="openai/gpt-oss-120b" ;;
-        gemini) model="gemini-2.0-flash" ;;
-        *)
-          echo "❌ Provider tidak dikenal: '$provider'. Pilih: groq / gemini"
-          return 1
-          ;;
-      esac
-    fi
-
-    # Cek API key sesuai provider, kalau belum di-set langsung fallback ke regex
-    local has_api_key=true
-    if [ "$provider" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-      has_api_key=false
-    fi
-    if [ "$provider" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
-      has_api_key=false
-    fi
-
-    if [ "$has_api_key" = true ]; then
+    if _gfb_ai_key "$provider" quiet; then
       local prompt="Extract the numeric PRD/story ID from this git branch name. The ID is usually a sequence of digits (5 digits or more) embedded somewhere in the branch name. Return ONLY the number, nothing else, no explanation, no punctuation. If there is no clear numeric ID, return exactly: NONE
 Branch name: $branch_name"
-
-      local response result
-
-      if [ "$provider" = "groq" ]; then
-        local json_payload
-        json_payload=$(python3 -c "
-import sys, json
-print(json.dumps({
-    'model': sys.argv[2],
-    'messages': [{'role': 'user', 'content': sys.argv[1]}],
-    'temperature': 0
-}))
-" "$prompt" "$model" 2>/dev/null)
-
-        response=$(curl -s https://api.groq.com/openai/v1/chat/completions \
-          -H "Authorization: Bearer $GROQ_API_KEY" \
-          -H "Content-Type: application/json" \
-          -d "$json_payload")
-
-        result=$(python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[1])
-  print(d['choices'][0]['message']['content'].strip())
-except Exception:
-  print('NONE')
-" "$response" 2>/dev/null)
-
-      elif [ "$provider" = "gemini" ]; then
-        local json_payload
-        json_payload=$(python3 -c "
-import sys, json
-print(json.dumps({
-    'contents': [{'parts': [{'text': sys.argv[1]}]}],
-    'generationConfig': {'temperature': 0}
-}))
-" "$prompt" 2>/dev/null)
-
-        response=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
-          -H "Content-Type: application/json" \
-          -d "$json_payload")
-
-        result=$(python3 -c "
-import sys, json
-try:
-  d = json.loads(sys.argv[1])
-  print(d['candidates'][0]['content']['parts'][0]['text'].strip())
-except Exception:
-  print('NONE')
-" "$response" 2>/dev/null)
-      fi
-
-      # Bersihkan hasil, ambil digit saja kalau AI kasih tambahan teks
-      result=$(echo "$result" | grep -oE '[0-9]+' | head -1)
-      [ -n "$result" ] && prd_id="$result"
+      _gfb_step "Deteksi ID via $provider…"
+      local result
+      result=$(_gfb_ai_generate "$provider" "$model" "$prompt" 0 2>/dev/null)
+      _gfb_unwait
+      # Ambil digit saja kalau AI kasih tambahan teks
+      result=$(print -r -- "$result" | grep -oE '[0-9]+' | head -1)
+      [ -n "$result" ] && { prd_id="$result"; id_source="AI ($provider)"; }
     else
-      echo "ℹ️  API key untuk provider '$provider' belum di-set, fallback ke deteksi angka dari nama branch."
+      _gfb_info "API key $provider belum di-set, pakai angka dari nama branch."
     fi
 
-    # Fallback: kalau AI tidak tersedia / tidak ketemu, coba regex sederhana
+    # Fallback: ambil angka terakhir di nama branch
     if [ -z "$prd_id" ]; then
-      prd_id=$(echo "$branch_name" | grep -oE '[0-9]+' | tail -1)
+      prd_id=$(print -r -- "$branch_name" | grep -oE '[0-9]+' | tail -1)
+      [ -n "$prd_id" ] && id_source="angka di nama branch"
     fi
   fi
 
   # Kalau masih belum ketemu, minta input manual
   if [ -z "$prd_id" ]; then
-    echo "⚠️  ID PRD tidak ditemukan otomatis di nama branch."
-    read "prd_id?Masukkan ID PRD manual: "
+    print
+    _gfb_warn "ID PRD tidak ditemukan otomatis di nama branch."
+    _gfb_ask prd_id "Masukkan ID PRD"
+    id_source="input manual"
   fi
 
   if [ -z "$prd_id" ] || ! [[ "$prd_id" =~ ^[0-9]+$ ]]; then
-    echo "❌ ID PRD tidak valid."
+    _gfb_err "ID PRD tidak valid."
     return 1
   fi
+
+  _gfb_kv "ID" "${B}$prd_id${N}  ${D}($id_source)${N}"
 
   local story_link="${LARK_STORY_BASE_URL}${prd_id}"
   local issue_link="${LARK_ISSUE_BASE_URL}${prd_id}"
 
   # Tebak tipe ticket paling mungkin dari nama branch: "fix" → Issue duluan, selain itu → Story duluan
-  local first_label="Story (feat)"
-  local first_link="$story_link"
-  local second_label="Issue (fix)"
-  local second_link="$issue_link"
-
+  local first_label="Story" first_link="$story_link" second_label="Issue" second_link="$issue_link"
   if [[ "$branch_name" == *fix* ]]; then
-    first_label="Issue (fix)"
-    first_link="$issue_link"
-    second_label="Story (feat)"
-    second_link="$story_link"
+    first_label="Issue"; first_link="$issue_link"
+    second_label="Story"; second_link="$story_link"
   fi
 
-  echo ""
-  echo "🔗 Lark Link (paling mungkin duluan):"
-  echo "  [1] $first_label  → $first_link"
-  echo "  [2] $second_label → $second_link"
-  echo ""
+  _gfb_sec "Link" "paling mungkin di atas"
+  _gfb_item 1 "${B}$first_label${N}  ${C}$first_link${N}"
+  _gfb_item 2 "${B}$second_label${N}  ${C}$second_link${N}"
 
-  read "copy?📋 Copy link mana ke clipboard? (1/2/N): "
-  if [[ "$copy" == "1" ]]; then
-    echo "$first_link" | pbcopy
-    echo "✅ Sudah di-copy ke clipboard!"
-  elif [[ "$copy" == "2" ]]; then
-    echo "$second_link" | pbcopy
-    echo "✅ Sudah di-copy ke clipboard!"
-  fi
+  local copy
+  _gfb_ask copy "Copy link ke clipboard?" "(1 / 2, Enter = lewati)"
+  case $copy in
+    1) _gfb_copy "$first_link" ;;
+    2) _gfb_copy "$second_link" ;;
+  esac
+  print
 }
 
-# Git Feature Branch Conflict Checker
-# Cek apakah ada conflict antar branch tanpa benar-benar merge
-#
-# contoh:
-# gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927
-# gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march
-#
-# output:
-# ✅ kiki/feat/SP-829 → tidak ada conflict dengan master
-# ⚠️  kiki/feat/SP-927 → conflict dengan kiki/feat/SP-829
+# ════════════════════════════════════════════════════════════════════
+# gfbconflict — cek conflict antar branch tanpa benar-benar merge
+#   gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927
+# ════════════════════════════════════════════════════════════════════
+_gfbconflict_usage() {
+  _gfb_head "gfbconflict" "cek conflict tanpa merge sungguhan"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbconflict <base-branch> <branch1> [branch2 ...]"
+  _gfb_note "tiap branch dicoba merge ke base (di branch sementara), lalu dibatalkan"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
+  _gfb_ex "gfbconflict dev_sprint_9a @" "branch aktif vs dev_sprint_9a"
+  print
+}
+
 gfbconflict() {
+  [[ "$1" == -h || "$1" == --help ]] && { _gfbconflict_usage; return 0; }
   if [ "$#" -lt 2 ]; then
-    echo "❌ Gunakan: gfbconflict <base-branch> <branch1> <branch2> ..."
-    echo "Contoh:"
-    echo "  gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
+    _gfb_bad gfbconflict "Butuh base branch dan minimal 1 branch yang dicek."
     return 1
   fi
+  _gfb_repo || return 1
 
-  local base_branch="$1"
-  shift
-  local branches=("$@")
+  local B D N G R Y C M; _gfb_pal
+  local base_branch=$(_gfb_ref "$1"); shift
+  local -a branches=()
+  local b
+  for b in "$@"; do branches+=("$(_gfb_ref "$b")"); done
 
-  # "." berarti merefer ke branch aktif saat ini (base maupun salah satu target)
-  [ "$base_branch" = "." ] && base_branch=$(git rev-parse --abbrev-ref HEAD)
-  local i
-  for i in {1..${#branches[@]}}; do
-    [[ "${branches[i]}" == "." ]] && branches[i]=$(git rev-parse --abbrev-ref HEAD)
-  done
-
-  local original_branch=$(git rev-parse --abbrev-ref HEAD)
+  local original_branch=$(_gfb_cur)
   local temp_branch="__gfbconflict_temp__"
 
-  # Pastikan working tree bersih
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "⚠️  Ada uncommitted changes. Stash atau commit dulu sebelum cek conflict."
+    _gfb_err "Ada uncommitted changes. Stash atau commit dulu sebelum cek conflict."
     return 1
   fi
 
-  echo ""
-  echo "🔍 Base branch : $base_branch"
-  echo "📋 Branch yang dicek: ${(j:, :)branches}"
-  echo ""
+  _gfb_head "gfbconflict" "cek conflict tanpa merge sungguhan"
+  _gfb_kv "base" "$base_branch"
+  _gfb_kv "cek" "${#branches} branch"
+  print
 
-  # Update base branch dulu
-  echo "🔄 Pulling newest $base_branch..."
-  git checkout "$base_branch" && git pull origin "$base_branch" --quiet || return 1
-  echo ""
+  _gfb_step "Pull $base_branch"
+  if ! { git checkout -q "$base_branch" && git pull -q origin "$base_branch"; }; then
+    _gfb_err "Gagal update $base_branch."
+    git checkout -q "$original_branch"
+    return 1
+  fi
 
-  # Buat temp branch dari base
-  git checkout -b "$temp_branch" --quiet
+  # Branch sementara dari base (hapus sisa run sebelumnya kalau ada)
+  git branch -q -D "$temp_branch" 2>/dev/null
+  git checkout -q -b "$temp_branch"
 
-  local -a clean_list
-  local -a conflict_list
+  local w=0
+  for b in "${branches[@]}"; do (( ${#b} > w )) && w=${#b}; done
 
-  for branch in "${branches[@]}"; do
-    # Coba merge --no-commit --no-ff
-    git merge --no-commit --no-ff "$branch" --quiet 2>/dev/null
-    local merge_result=$?
+  _gfb_sec "Hasil"
+  local -a clean_list=() conflict_list=() missing_list=()
+  for b in "${branches[@]}"; do
+    if ! git rev-parse --verify -q "$b^{commit}" >/dev/null; then
+      missing_list+=("$b")
+      print -r -- "    ${Y}?${N} ${(r:w:)b}  ${Y}tidak ditemukan${N}"
+      continue
+    fi
 
-    if [ $merge_result -ne 0 ]; then
-      # Ada conflict
-      local conflict_files=$(git diff --name-only --diff-filter=U)
-      conflict_list+=("$branch")
-      echo "  ⚠️  $branch → CONFLICT"
-      echo "$conflict_files" | while read -r f; do
-        [ -n "$f" ] && echo "       └─ $f"
-      done
+    if git merge --no-commit --no-ff -q "$b" >/dev/null 2>&1; then
+      clean_list+=("$b")
+      print -r -- "    ${G}✔${N} ${(r:w:)b}  ${G}aman${N}"
     else
-      clean_list+=("$branch")
-      echo "  ✅ $branch → aman"
+      local -a fl=(${(f)"$(git diff --name-only --diff-filter=U)"})
+      conflict_list+=("$b")
+      print -r -- "    ${R}✖${N} ${(r:w:)b}  ${R}conflict${N} ${D}· ${#fl} file${N}"
+      local f
+      for f in "${fl[@]}"; do print -r -- "        ${D}└${N} $f"; done
     fi
 
     # Abort merge & reset ke base agar cek berikutnya fresh
     git merge --abort 2>/dev/null
-    git reset --hard "$base_branch" --quiet
+    git reset -q --hard "$base_branch"
   done
 
-  # Cleanup: hapus temp branch, balik ke semula
-  git checkout "$original_branch" --quiet
-  git branch -D "$temp_branch" --quiet
+  git checkout -q "$original_branch"
+  git branch -q -D "$temp_branch"
 
-  echo ""
-  echo "══════════════════════════════════════════"
-  echo "  ✅ Aman    : ${#clean_list[@]} branch"
-  echo "  ⚠️  Conflict: ${#conflict_list[@]} branch"
-  echo "══════════════════════════════════════════"
-  echo ""
+  print
+  _gfb_rule
+  local summary="  ${G}✔ ${#clean_list} aman${N}    ${R}✖ ${#conflict_list} conflict${N}"
+  (( ${#missing_list} )) && summary+="    ${Y}? ${#missing_list} tidak ditemukan${N}"
+  print -r -- "$summary"
+  print
 }
 
-# Git Feature Branch Delete
-# Hapus branch di local dan remote sekaligus
-# Aman: tidak bisa hapus branch penting (master, main, develop, staging, production)
-# Bisa pilih branch dari list, atau langsung kasih nama
-#
-# contoh:
-# gfbdel                          → tampilkan semua branch, pilih dari list
-# gfbdel kiki/feat/SP-829         → langsung hapus branch spesifik
-# gfbdel -f feature               → filter list branch sebelum pilih
-# gfbdel -lo kiki/feat/SP-829     → hapus local only
-# gfbdel -ro kiki/feat/SP-829     → hapus remote only
-gfbdel() {
-  local branch_input=""
-  local filter=""
-  local local_only=false
-  local remote_only=false
+# ════════════════════════════════════════════════════════════════════
+# gfbdel — hapus branch di lokal dan origin sekaligus
+# Aman: branch penting (master, main, develop, staging, production) tidak bisa dihapus
+#   gfbdel                       → pilih dari list
+#   gfbdel kiki/feat/SP-829      → langsung
+#   gfbdel -f feature            → filter list
+#   gfbdel -lo kiki/feat/SP-829  → lokal saja
+#   gfbdel -ro kiki/feat/SP-829  → origin saja
+# ════════════════════════════════════════════════════════════════════
+_gfbdel_usage() {
+  _gfb_head "gfbdel" "hapus branch lokal + origin"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbdel [branch] [-f keyword] [-lo | -ro]"
+  _gfb_note "tanpa branch → pilih dari daftar"
+  _gfb_sec "Opsi"
+  _gfb_opt "-f, --filter" "filter daftar branch"
+  _gfb_opt "-lo, --local-only" "hapus lokal saja"
+  _gfb_opt "-ro, --remote-only" "hapus origin saja"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbdel" "pilih dari daftar"
+  _gfb_ex "gfbdel kiki/feat/SP-829" "langsung hapus"
+  _gfb_ex "gfbdel -f feature" "filter daftar"
+  _gfb_ex "gfbdel -lo kiki/feat/SP-829" "lokal saja"
+  _gfb_sec "Proteksi"
+  _gfb_note "master, main, develop, staging, production & branch aktif tidak bisa dihapus."
+  print
+}
 
-  # Parsing argumen
+gfbdel() {
+  local branch_input="" filter="" local_only=false remote_only=false
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -f|--filter)
-        filter="$2"
-        shift
-        ;;
+      -h|--help) _gfbdel_usage; return 0 ;;
+      -f|--filter) filter="$2"; shift ;;
       -lo|--local-only)  local_only=true ;;
       -ro|--remote-only) remote_only=true ;;
-      *)
-        if [ -z "$branch_input" ]; then
-          branch_input="$1"
-        fi
-        ;;
+      -*) _gfb_bad gfbdel "Flag tidak dikenal: $1"; return 1 ;;
+      *) [ -z "$branch_input" ] && branch_input="$1" ;;
     esac
     shift
   done
+  _gfb_repo || return 1
 
-  # "." berarti merefer ke branch aktif saat ini
-  [ "$branch_input" = "." ] && branch_input=$(git rev-parse --abbrev-ref HEAD)
+  local B D N G R Y C M; _gfb_pal
+  branch_input=$(_gfb_ref "$branch_input")
 
-  # Daftar branch yang dilindungi
-  local protected_pattern='^(master|main|develop|staging|production)$'
+  _gfb_head "gfbdel" "hapus branch lokal + origin"
 
-  # Jika branch langsung diberikan, skip tampil list
+  # Branch langsung diberikan → skip daftar
   if [ -n "$branch_input" ]; then
-    if [[ "$branch_input" =~ $protected_pattern ]]; then
-      echo "🔒 Branch '$branch_input' dilindungi dan tidak bisa dihapus."
+    if [[ "$branch_input" =~ $GFB_PROTECTED ]]; then
+      _gfb_err "Branch '$branch_input' dilindungi, tidak bisa dihapus."
       return 1
     fi
     _gfbdel_execute "$branch_input" "$local_only" "$remote_only"
     return $?
   fi
 
-  # Tidak ada input → tampilkan list branch untuk dipilih
-  echo "🔄 Fetching origin..."
-  git fetch --quiet 2>/dev/null
+  _gfb_step "Fetch origin"
+  git fetch --quiet --prune 2>/dev/null
+  _gfb_unwait
 
-  local local_branches
-  local_branches=$(git branch \
-    | sed 's/^[* ]*//' \
-    | grep -vE "$protected_pattern")
+  local current_branch=$(_gfb_cur)
+  local branches
+  branches=$(git branch --format='%(refname:short)' | grep -vE "$GFB_PROTECTED")
+  [ -n "$filter" ] && branches=$(print -r -- "$branches" | grep -- "$filter")
 
-  if [ -n "$filter" ]; then
-    local_branches=$(echo "$local_branches" | grep "$filter")
-  fi
-
-  if [ -z "$local_branches" ]; then
-    echo "⚠️  Tidak ada branch yang bisa dihapus."
+  if [ -z "$branches" ]; then
+    _gfb_warn "Tidak ada branch${filter:+ yang cocok dengan '$filter'} yang bisa dihapus."
+    print
     return 0
   fi
 
-  echo ""
-  echo "🗑 Branch yang tersedia untuk dihapus:"
-  local i=1
-  declare -a branch_list
-  while read -r branch; do
-    [ -z "$branch" ] && continue
-    echo "  [$i] $branch"
-    branch_list[$i]="$branch"
-    ((i++))
-  done <<< "$local_branches"
+  local -a branch_list=(${(f)branches})
+  _gfb_sec "Branch lokal" "${#branch_list}"
+  local i extra
+  for (( i = 1; i <= ${#branch_list}; i++ )); do
+    extra="${D}· $(git log -1 --format=%cr "${branch_list[i]}")${N}"
+    [ "${branch_list[i]}" = "$current_branch" ] && extra="${G}● aktif${N}"
+    _gfb_item $i "${branch_list[i]}  $extra"
+  done
 
-  echo ""
-  read "selection?Pilih nomor branch yang ingin dihapus: "
+  local selection
+  _gfb_ask selection "Pilih nomor branch" "(Enter = batal)"
 
   if [ -z "$selection" ]; then
-    echo "❌ Tidak ada yang dipilih. Dibatalkan."
+    _gfb_info "Tidak ada yang dipilih. Dibatalkan."
+    print
     return 0
   fi
-
-  local selected_branch="${branch_list[$selection]}"
-
-  if [ -z "$selected_branch" ]; then
-    echo "❌ Nomor tidak valid."
+  if ! [[ "$selection" == <-> ]] || (( selection < 1 || selection > ${#branch_list} )); then
+    _gfb_err "Nomor tidak valid: $selection"
     return 1
   fi
 
-  _gfbdel_execute "$selected_branch" "$local_only" "$remote_only"
+  _gfbdel_execute "${branch_list[selection]}" "$local_only" "$remote_only"
 }
 
-# Helper internal untuk gfbdel: eksekusi hapus branch local dan/atau remote
+# Helper internal untuk gfbdel: eksekusi hapus branch lokal dan/atau origin
 _gfbdel_execute() {
-  local branch="$1"
-  local local_only="$2"
-  local remote_only="$3"
-  local current_branch=$(git rev-parse --abbrev-ref HEAD)
+  local branch="$1" local_only="$2" remote_only="$3"
+  local B D N G R Y C M; _gfb_pal
 
-  # Cek apakah sedang di branch yang mau dihapus
-  if [ "$current_branch" = "$branch" ]; then
-    echo "⚠️  Kamu sedang berada di branch '$branch'."
-    echo "Pindah dulu ke branch lain sebelum menghapus."
+  if [ "$(_gfb_cur)" = "$branch" ]; then
+    _gfb_err "Kamu sedang berada di branch '$branch'."
+    _gfb_hint "git switch <branch-lain>" "pindah dulu sebelum menghapus"
     return 1
   fi
 
-  # Cek eksistensi di local dan remote
-  local has_local=false
-  local has_remote=false
+  local has_local=false has_remote=false
   git show-ref --verify --quiet "refs/heads/$branch"          && has_local=true
   git show-ref --verify --quiet "refs/remotes/origin/$branch" && has_remote=true
 
   if ! $has_local && ! $has_remote; then
-    echo "❌ Branch '$branch' tidak ditemukan (local maupun remote)."
+    _gfb_err "Branch '$branch' tidak ditemukan (lokal maupun origin)."
     return 1
   fi
 
-  echo ""
-  echo "🗑 Branch yang akan dihapus: $branch"
-  $has_local  && ! $remote_only && echo "  └─ local  : ✓"
-  $has_remote && ! $local_only  && echo "  └─ remote : ✓"
-  echo ""
+  local do_local=false do_remote=false
+  $has_local  && ! $remote_only && do_local=true
+  $has_remote && ! $local_only  && do_remote=true
 
-  read "confirm?Lanjutkan hapus? (y/N): "
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo "❌ Dibatalkan."
+  local local_label origin_label
+  if $do_local; then local_label="${R}hapus${N}"
+  elif $has_local; then local_label="${D}dilewati (-ro)${N}"
+  else local_label="${D}tidak ada${N}"; fi
+  if $do_remote; then origin_label="${R}hapus${N}"
+  elif $has_remote; then origin_label="${D}dilewati (-lo)${N}"
+  else origin_label="${D}tidak ada${N}"; fi
+
+  _gfb_sec "Akan dihapus"
+  _gfb_kv "branch" "${B}$branch${N}"
+  _gfb_kv "lokal" "$local_label"
+  _gfb_kv "origin" "$origin_label"
+
+  if ! $do_local && ! $do_remote; then
+    print
+    _gfb_warn "Tidak ada yang bisa dihapus dengan opsi ini."
+    print
+    return 1
+  fi
+
+  if ! _gfb_confirm "Lanjut hapus?" n; then
+    _gfb_info "Dibatalkan."
+    print
     return 0
   fi
 
-  # Hapus local
-  if $has_local && ! $remote_only; then
-    echo "➡️  Hapus local: $branch"
-    git branch -d "$branch" 2>/dev/null || git branch -D "$branch"
+  print
+  if $do_local; then
+    _gfb_step "Hapus lokal"
+    git branch -q -d "$branch" 2>/dev/null || git branch -q -D "$branch" || { _gfb_err "Gagal hapus lokal."; return 1; }
+  fi
+  if $do_remote; then
+    _gfb_step "Hapus origin"
+    git push -q origin --delete "$branch" || { _gfb_err "Gagal hapus di origin."; return 1; }
   fi
 
-  # Hapus remote
-  if $has_remote && ! $local_only; then
-    echo "➡️  Hapus remote: origin/$branch"
-    git push origin --delete "$branch"
-  fi
-
-  echo "✅ Branch '$branch' berhasil dihapus."
+  print
+  _gfb_ok "Branch ${B}$branch${N} dihapus."
+  print
 }
 
-# Git Feature Branch Range
-# Menampilkan list commit dan file yang berubah di antara dua commit hash
-# Mendukung short hash maupun full hash
-#
-# contoh:
-# gfbrange abc1234 def5678
-# gfbrange abc1234 def5678 -f src/services
-gfbrange() {
-  local hash1=""
-  local hash2=""
-  local filter=""
+# ════════════════════════════════════════════════════════════════════
+# gfbrange — commit dan file yang berubah di antara dua commit hash
+#   gfbrange abc1234 def5678
+#   gfbrange abc1234 def5678 -f src/services
+# ════════════════════════════════════════════════════════════════════
+_gfbrange_usage() {
+  _gfb_head "gfbrange" "commit & file berubah antar dua hash"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbrange <hash-lama> <hash-baru> [-f keyword]"
+  _gfb_note "urutan terbalik otomatis dibetulkan"
+  _gfb_sec "Opsi"
+  _gfb_opt "-f, --filter" "filter path file"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbrange abc1234 def5678" "semua file"
+  _gfb_ex "gfbrange abc1234 def5678 -f services" "path mengandung 'services'"
+  print
+}
 
-  # Parsing argumen
+gfbrange() {
+  local hash1="" hash2="" filter=""
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -f|--filter)
-        filter="$2"
-        shift
-        ;;
+      -h|--help) _gfbrange_usage; return 0 ;;
+      -f|--filter) filter="$2"; shift ;;
+      -*) _gfb_bad gfbrange "Flag tidak dikenal: $1"; return 1 ;;
       *)
-        if [ -z "$hash1" ]; then
-          hash1="$1"
-        elif [ -z "$hash2" ]; then
-          hash2="$1"
+        if [ -z "$hash1" ]; then hash1="$1"
+        elif [ -z "$hash2" ]; then hash2="$1"
         fi
         ;;
     esac
     shift
   done
 
-  # Validasi input
   if [ -z "$hash1" ] || [ -z "$hash2" ]; then
-    echo "❌ Gunakan: gfbrange <hash1> <hash2> [-f keyword]"
-    echo "Contoh:"
-    echo "  gfbrange abc1234 def5678"
-    echo "  gfbrange abc1234 def5678 -f src/services"
+    _gfb_bad gfbrange "Butuh dua commit hash."
     return 1
   fi
+  _gfb_repo || return 1
+  local h
+  for h in "$hash1" "$hash2"; do
+    if ! git cat-file -e "$h^{commit}" 2>/dev/null; then
+      _gfb_err "Commit '$h' tidak ditemukan di repo ini."
+      return 1
+    fi
+  done
 
-  # Validasi kedua commit hash exist
-  if ! git cat-file -e "$hash1^{commit}" 2>/dev/null; then
-    echo "❌ Commit '$hash1' tidak ditemukan di repo ini."
-    return 1
-  fi
-  if ! git cat-file -e "$hash2^{commit}" 2>/dev/null; then
-    echo "❌ Commit '$hash2' tidak ditemukan di repo ini."
-    return 1
-  fi
-
-  local short1=$(git rev-parse --short "$hash1")
-  local short2=$(git rev-parse --short "$hash2")
-
-  # Ambil list commit antara hash1..hash2
-  local commits
-  commits=$(git log "$hash1".."$hash2" --oneline --no-decorate 2>/dev/null)
-
-  echo ""
-  echo "🔗 Range   : $short1 → $short2"
-
-  if [ -z "$commits" ]; then
-    # Coba balik urutan, mungkin hash1 lebih baru dari hash2
-    commits=$(git log "$hash2".."$hash1" --oneline --no-decorate 2>/dev/null)
-    if [ -n "$commits" ]; then
-      echo "⚠️  Urutan dibalik: $short2 → $short1"
-      # Tukar supaya diff file juga konsisten
+  local B D N G R Y C M; _gfb_pal
+  local reversed=false
+  local count=$(git rev-list --count "$hash1..$hash2" 2>/dev/null)
+  if (( count == 0 )); then
+    # Mungkin hash1 lebih baru dari hash2 → tukar
+    local rcount=$(git rev-list --count "$hash2..$hash1" 2>/dev/null)
+    if (( rcount > 0 )); then
       local tmp="$hash1"; hash1="$hash2"; hash2="$tmp"
-      short1=$(git rev-parse --short "$hash1")
-      short2=$(git rev-parse --short "$hash2")
-    else
-      echo "✅ Tidak ada commit di antara kedua hash tersebut."
-      return 0
+      count=$rcount
+      reversed=true
     fi
   fi
 
-  local commit_count=$(echo "$commits" | wc -l | tr -d ' ')
+  local short1=$(git rev-parse --short "$hash1") short2=$(git rev-parse --short "$hash2")
 
-  # ── Tampilkan commit list ──────────────────────────────────────
-  echo ""
-  echo "📋 Commits ($commit_count):"
-  local i=1
-  while read -r line; do
-    echo "  [$i] $line"
-    ((i++))
-  done <<< "$commits"
+  _gfb_head "gfbrange" "commit & file berubah antar dua hash"
+  _gfb_kv "dari" "$(git log -1 --format="${Y}%h${N} %s ${D}· %cd${N}" --date=format:'%Y-%m-%d' "$hash1")"
+  _gfb_kv "sampai" "$(git log -1 --format="${Y}%h${N} %s ${D}· %cd${N}" --date=format:'%Y-%m-%d' "$hash2")"
+  [ -n "$filter" ] && _gfb_kv "filter" "$filter"
+  [ "$reversed" = true ] && { print; _gfb_info "Urutan dibalik otomatis: $short1 → $short2"; }
 
-  # ── Tampilkan file yang berubah ────────────────────────────────
-  # --diff-filter: M=Modified A=Added D=Deleted R=Renamed C=Copied
-  local changed_files
-  changed_files=$(git diff --name-status "$hash1" "$hash2" 2>/dev/null)
-
-  if [ -n "$filter" ]; then
-    changed_files=$(echo "$changed_files" | grep "$filter")
-  fi
-
-  if [ -z "$changed_files" ]; then
-    echo ""
-    echo "📂 Tidak ada file yang berubah."
+  if (( count == 0 )); then
+    print
+    _gfb_ok "Tidak ada commit di antara kedua hash tersebut."
+    print
     return 0
   fi
 
-  # Hitung per status
-  local count_m=$(echo "$changed_files" | grep -c '^M' || true)
-  local count_a=$(echo "$changed_files" | grep -c '^A' || true)
-  local count_d=$(echo "$changed_files" | grep -c '^D' || true)
-  local count_r=$(echo "$changed_files" | grep -c '^R' || true)
-  local count_c=$(echo "$changed_files" | grep -c '^C' || true)
-  local total_files=$(echo "$changed_files" | grep -c '.' || true)
+  _gfb_sec "Commit" "$count"
+  _gfb_commits "$hash1..$hash2"
 
-  echo ""
-  echo "📂 Files changed ($total_files):"
+  local changed_files=$(git diff --name-status "$hash1" "$hash2" 2>/dev/null)
+  [ -n "$filter" ] && changed_files=$(print -r -- "$changed_files" | grep -- "$filter")
 
-  # fstatus menggantikan status (reserved variable di zsh)
-  while IFS=$'\t' read -r fstatus filepath rest; do
-    [ -z "$fstatus" ] && continue
-    case "${fstatus:0:1}" in
-      M) echo "  \033[33m[M]\033[0m  $filepath" ;;  # Modified  → kuning
-      A) echo "  \033[32m[A]\033[0m  $filepath" ;;  # Added     → hijau
-      D) echo "  \033[31m[D]\033[0m  $filepath" ;;  # Deleted   → merah
-      R) echo "  \033[34m[R]\033[0m  $filepath → $rest" ;;  # Renamed → biru
-      C) echo "  \033[36m[C]\033[0m  $filepath → $rest" ;;  # Copied  → cyan
-      *) echo "  [?]  $filepath" ;;
-    esac
-  done <<< "$changed_files"
-
-  # Summary
-  echo ""
-  echo "──────────────────────────────────────────────────────"
-  printf "  Total: %-4s" "$total_files"
-  [ "$count_m" -gt 0 ] && printf "  \033[33mM:%-3s\033[0m" "$count_m"
-  [ "$count_a" -gt 0 ] && printf "  \033[32mA:%-3s\033[0m" "$count_a"
-  [ "$count_d" -gt 0 ] && printf "  \033[31mD:%-3s\033[0m" "$count_d"
-  [ "$count_r" -gt 0 ] && printf "  \033[34mR:%-3s\033[0m" "$count_r"
-  [ "$count_c" -gt 0 ] && printf "  \033[36mC:%-3s\033[0m" "$count_c"
-  echo ""
-  echo "──────────────────────────────────────────────────────"
-  echo ""
+  if [ -z "$changed_files" ]; then
+    _gfb_sec "File berubah" "tidak ada${filter:+ yang cocok}"
+  else
+    _gfb_sec "File berubah" "$short1 → $short2"
+    _gfb_ns_list "$changed_files"
+  fi
+  print
 }
 
-# Git Feature Branch Compare
-# Membandingkan dua branch secara menyeluruh:
-# - Common ancestor (titik diverge)
-# - Ahead/behind count di kedua arah
-# - Commit yang ada di branch A tapi tidak di branch B (dan sebaliknya)
-# - File yang berbeda antara kedua branch
-#
-# contoh:
-# gfbcompare master feature/login
-# gfbcompare master feature/login -f src/services
-# gfbcompare develop kiki/feat/SP-829
-gfbcompare() {
-  local branch_a=""
-  local branch_b=""
-  local filter=""
+# ════════════════════════════════════════════════════════════════════
+# gfbcompare — bandingkan dua branch: common ancestor, ahead/behind,
+# commit eksklusif masing-masing, dan file yang berbeda
+#   gfbcompare master feature/login
+#   gfbcompare develop kiki/feat/SP-829 -f src/services
+# ════════════════════════════════════════════════════════════════════
+_gfbcompare_usage() {
+  _gfb_head "gfbcompare" "bandingkan dua branch"
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbcompare <branch-a> <branch-b> [-f keyword]"
+  _gfb_sec "Opsi"
+  _gfb_opt "-f, --filter" "filter path file"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Isi"
+  _gfb_note "common ancestor, ahead/behind, commit eksklusif A & B, file yang berbeda."
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbcompare master feature/login"
+  _gfb_ex "gfbcompare develop @ -f src/services" "develop vs branch aktif"
+  print
+}
 
-  # Parsing argumen
+gfbcompare() {
+  local branch_a="" branch_b="" filter=""
+
   while [[ "$#" -gt 0 ]]; do
     case $1 in
-      -f|--filter)
-        filter="$2"
-        shift
-        ;;
+      -h|--help) _gfbcompare_usage; return 0 ;;
+      -f|--filter) filter="$2"; shift ;;
+      -*) _gfb_bad gfbcompare "Flag tidak dikenal: $1"; return 1 ;;
       *)
-        if [ -z "$branch_a" ]; then
-          branch_a="$1"
-        elif [ -z "$branch_b" ]; then
-          branch_b="$1"
+        if [ -z "$branch_a" ]; then branch_a="$1"
+        elif [ -z "$branch_b" ]; then branch_b="$1"
         fi
         ;;
     esac
     shift
   done
 
-  # "." berarti merefer ke branch aktif saat ini
-  [ "$branch_a" = "." ] && branch_a=$(git rev-parse --abbrev-ref HEAD)
-  [ "$branch_b" = "." ] && branch_b=$(git rev-parse --abbrev-ref HEAD)
-
-  # Validasi input
   if [ -z "$branch_a" ] || [ -z "$branch_b" ]; then
-    echo "❌ Gunakan: gfbcompare <branch-a> <branch-b> [-f keyword]"
-    echo "Contoh:"
-    echo "  gfbcompare master feature/login"
-    echo "  gfbcompare develop kiki/feat/SP-829 -f src/services"
+    _gfb_bad gfbcompare "Butuh dua branch."
     return 1
   fi
+  _gfb_repo || return 1
+  branch_a=$(_gfb_ref "$branch_a")
+  branch_b=$(_gfb_ref "$branch_b")
+  local ref
+  for ref in "$branch_a" "$branch_b"; do
+    if ! git rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+      _gfb_err "Branch '$ref' tidak ditemukan."
+      return 1
+    fi
+  done
 
-  # Validasi kedua branch exist
-  if ! git rev-parse --verify "$branch_a" &>/dev/null; then
-    echo "❌ Branch '$branch_a' tidak ditemukan."
-    return 1
-  fi
-  if ! git rev-parse --verify "$branch_b" &>/dev/null; then
-    echo "❌ Branch '$branch_b' tidak ditemukan."
-    return 1
-  fi
+  local B D N G R Y C M; _gfb_pal
 
-  # ── Header ────────────────────────────────────────────────────
-  echo ""
-  echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║               🔀 Branch Comparison                          ║"
-  echo "╚══════════════════════════════════════════════════════════════╝"
-  echo ""
-  echo "  🅐  $branch_a"
-  echo "  🅑  $branch_b"
-  echo ""
+  _gfb_head "gfbcompare" "bandingkan dua branch"
+  _gfb_kv "A" "${B}$branch_a${N}"
+  _gfb_kv "B" "${B}$branch_b${N}"
+  [ -n "$filter" ] && _gfb_kv "filter" "$filter"
 
-  # ── Common ancestor ───────────────────────────────────────────
-  local merge_base
-  merge_base=$(git merge-base "$branch_a" "$branch_b" 2>/dev/null)
-
+  # ── Common ancestor ──
+  local merge_base=$(git merge-base "$branch_a" "$branch_b" 2>/dev/null)
   if [ -n "$merge_base" ]; then
-    local base_short=$(git rev-parse --short "$merge_base")
-    local base_msg=$(git log -1 --pretty=format:"%s" "$merge_base")
-    local base_date=$(git log -1 --pretty=format:"%cd" --date=format:"%Y-%m-%d" "$merge_base")
-    echo "──────────────────────────────────────────────────────"
-    echo "  🌱 Common Ancestor"
-    echo "──────────────────────────────────────────────────────"
-    echo "  Hash : $base_short"
-    echo "  Pesan: $base_msg"
-    echo "  Tanggal: $base_date"
-    echo ""
+    _gfb_sec "Common ancestor" "titik diverge"
+    git log -1 --format="    ${Y}%h${N}  %s ${D}· %cd${N}" --date=format:'%Y-%m-%d' "$merge_base"
   fi
 
-  # ── Ahead / Behind ────────────────────────────────────────────
-  local ahead_a=$(git rev-list --count "$branch_b".."$branch_a" 2>/dev/null)
-  local ahead_b=$(git rev-list --count "$branch_a".."$branch_b" 2>/dev/null)
+  # ── Ahead / behind ──
+  local ahead_a=$(git rev-list --count "$branch_b..$branch_a" 2>/dev/null)
+  local ahead_b=$(git rev-list --count "$branch_a..$branch_b" 2>/dev/null)
 
-  echo "──────────────────────────────────────────────────────"
-  echo "  📊 Ahead / Behind"
-  echo "──────────────────────────────────────────────────────"
-  echo "  🅐  $branch_a : \033[32m↑ $ahead_a commit\033[0m di depan 🅑"
-  echo "  🅑  $branch_b : \033[33m↑ $ahead_b commit\033[0m di depan 🅐"
-  echo ""
+  _gfb_sec "Hanya di A" "$ahead_a commit · $branch_a"
+  if (( ahead_a == 0 )); then _gfb_note "(tidak ada)"; else _gfb_commits "$branch_b..$branch_a"; fi
 
-  # ── Commit eksklusif di A (tidak ada di B) ────────────────────
-  local commits_only_a
-  commits_only_a=$(git log "$branch_b".."$branch_a" --oneline --no-decorate 2>/dev/null)
+  _gfb_sec "Hanya di B" "$ahead_b commit · $branch_b"
+  if (( ahead_b == 0 )); then _gfb_note "(tidak ada)"; else _gfb_commits "$branch_a..$branch_b"; fi
 
-  echo "──────────────────────────────────────────────────────"
-  echo "  📋 Commit hanya di 🅐  $branch_a  ($ahead_a)"
-  echo "──────────────────────────────────────────────────────"
-  if [ -z "$commits_only_a" ]; then
-    echo "  (tidak ada)"
-  else
-    local i=1
-    while read -r line; do
-      echo "  [$i] $line"
-      ((i++))
-    done <<< "$commits_only_a"
-  fi
-  echo ""
-
-  # ── Commit eksklusif di B (tidak ada di A) ────────────────────
-  local commits_only_b
-  commits_only_b=$(git log "$branch_a".."$branch_b" --oneline --no-decorate 2>/dev/null)
-
-  echo "──────────────────────────────────────────────────────"
-  echo "  📋 Commit hanya di 🅑  $branch_b  ($ahead_b)"
-  echo "──────────────────────────────────────────────────────"
-  if [ -z "$commits_only_b" ]; then
-    echo "  (tidak ada)"
-  else
-    local i=1
-    while read -r line; do
-      echo "  [$i] $line"
-      ((i++))
-    done <<< "$commits_only_b"
-  fi
-  echo ""
-
-  # ── File yang berbeda antara kedua branch ─────────────────────
-  local changed_files
-  changed_files=$(git diff --name-status "$branch_a".."$branch_b" 2>/dev/null)
-
-  if [ -n "$filter" ]; then
-    changed_files=$(echo "$changed_files" | grep "$filter")
-  fi
-
-  echo "──────────────────────────────────────────────────────"
-  echo "  📂 Files changed 🅐 → 🅑"
-  echo "──────────────────────────────────────────────────────"
+  # ── File yang berbeda ──
+  local changed_files=$(git diff --name-status "$branch_a" "$branch_b" 2>/dev/null)
+  [ -n "$filter" ] && changed_files=$(print -r -- "$changed_files" | grep -- "$filter")
 
   if [ -z "$changed_files" ]; then
-    echo "  (tidak ada perbedaan file)"
-    echo ""
-    return 0
+    _gfb_sec "File berbeda" "tidak ada${filter:+ yang cocok}"
+  else
+    _gfb_sec "File berbeda" "A → B"
+    _gfb_ns_list "$changed_files"
   fi
-
-  # Hitung per status
-  local count_m=$(echo "$changed_files" | grep -c '^M' || true)
-  local count_a=$(echo "$changed_files" | grep -c '^A' || true)
-  local count_d=$(echo "$changed_files" | grep -c '^D' || true)
-  local count_r=$(echo "$changed_files" | grep -c '^R' || true)
-  local count_c=$(echo "$changed_files" | grep -c '^C' || true)
-  local total_files=$(echo "$changed_files" | grep -c '.' || true)
-
-  # fstatus menggantikan status (reserved variable di zsh)
-  while IFS=$'\t' read -r fstatus filepath rest; do
-    [ -z "$fstatus" ] && continue
-    case "${fstatus:0:1}" in
-      M) echo "  \033[33m[M]\033[0m  $filepath" ;;  # Modified  → kuning
-      A) echo "  \033[32m[A]\033[0m  $filepath" ;;  # Added     → hijau
-      D) echo "  \033[31m[D]\033[0m  $filepath" ;;  # Deleted   → merah
-      R) echo "  \033[34m[R]\033[0m  $filepath → $rest" ;;  # Renamed → biru
-      C) echo "  \033[36m[C]\033[0m  $filepath → $rest" ;;  # Copied  → cyan
-      *) echo "  [?]  $filepath" ;;
-    esac
-  done <<< "$changed_files"
-
-  # ── Summary ───────────────────────────────────────────────────
-  echo ""
-  echo "══════════════════════════════════════════════════════"
-  printf "  Total file: %-4s" "$total_files"
-  [ "$count_m" -gt 0 ] && printf "  \033[33mM:%-3s\033[0m" "$count_m"
-  [ "$count_a" -gt 0 ] && printf "  \033[32mA:%-3s\033[0m" "$count_a"
-  [ "$count_d" -gt 0 ] && printf "  \033[31mD:%-3s\033[0m" "$count_d"
-  [ "$count_r" -gt 0 ] && printf "  \033[34mR:%-3s\033[0m" "$count_r"
-  [ "$count_c" -gt 0 ] && printf "  \033[36mC:%-3s\033[0m" "$count_c"
-  echo ""
-  echo "══════════════════════════════════════════════════════"
-  echo ""
+  print
 }
 
-# GFB Main — menampilkan daftar semua perintah GFB beserta usage-nya
-# Gunakan: gfbmain --help
+# ════════════════════════════════════════════════════════════════════
+# gfbmain — ringkasan semua perintah GFB
+#   gfbmain            → ringkasan
+#   gfbmain <perintah> → bantuan detail perintah itu (sama dengan <perintah> -h)
+# ════════════════════════════════════════════════════════════════════
 gfbmain() {
-  if [[ "$1" != "--help" ]]; then
-    echo "❓ Gunakan: gfbmain --help"
+  if [[ -n "$1" && "$1" != "--help" && "$1" != "-h" ]]; then
+    if [[ "$1" == gfb* ]] && (( $+functions[$1] )); then
+      "$1" -h
+      return 0
+    fi
+    _gfb_err "Perintah tidak dikenal: $1"
     return 1
   fi
 
-  echo ""
-  echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║           🌿 GFB — Git Feature Branch Toolkit               ║"
-  echo "╚══════════════════════════════════════════════════════════════╝"
-  echo ""
+  local B D N G R Y C M; _gfb_pal
 
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfb — Buat branch baru dari base branch"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfb [-p] <base-branch> <nama-branch-baru>"
-  echo "  Opsi    : -p / --push   → langsung push & set upstream"
-  echo "  Contoh  :"
-  echo "    gfb master fitur-login          → buat branch lokal"
-  echo "    gfb -p develop fitur-payment    → buat + push ke origin"
-  echo "  Tips    : base-branch bisa diisi '.' untuk pakai branch aktif saat ini"
-  echo ""
+  _gfb_head "GFB" "Git Feature Branch toolkit"
 
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbclean — Hapus branch yang sudah merged"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbclean <base-branch> [-f keyword]"
-  echo "  Opsi    : -f / --filter → filter nama branch"
-  echo "  Contoh  :"
-  echo "    gfbclean master                 → lihat & hapus branch merged"
-  echo "    gfbclean master -f feature      → filter branch mengandung 'feature'"
-  echo "  Input   : nomor (1,3,5), spasi (1 3 5), atau 'all'"
-  echo "  Tips    : base-branch bisa diisi '.' untuk pakai branch aktif saat ini"
-  echo ""
+  _gfb_sec "Branch"
+  _gfb_opt "gfb"          "buat branch baru dari base (opsional merge + push)"
+  _gfb_opt "gfbls"        "daftar branch, urut terakhir dipakai"
+  _gfb_opt "gfbdel"       "hapus branch lokal + origin"
+  _gfb_opt "gfbclean"     "hapus branch yang sudah merged"
+  _gfb_opt "gfbcheck"     "branch yang belum merged"
 
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbcheck — Cek branch yang belum merged"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbcheck <base-branch> [-f keyword]"
-  echo "  Opsi    : -f / --filter → filter nama branch"
-  echo "  Contoh  :"
-  echo "    gfbcheck master                 → tampilkan branch belum merged"
-  echo "    gfbcheck develop -f bugfix      → filter branch mengandung 'bugfix'"
-  echo "  Tips    : base-branch bisa diisi '.' untuk pakai branch aktif saat ini"
-  echo ""
+  _gfb_sec "Inspeksi"
+  _gfb_opt "gfbstatus"    "git status versi lengkap (+ recap AI)"
+  _gfb_opt "gfblog"       "commit yang belum ada di base"
+  _gfb_opt "gfbcompare"   "bandingkan dua branch"
+  _gfb_opt "gfbrange"     "commit & file di antara dua hash"
+  _gfb_opt "gfbfind"      "commit ada di branch mana saja"
+  _gfb_opt "gfbconflict"  "cek conflict antar branch tanpa merge"
 
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfblog — Lihat commit di branch yang belum ada di base"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfblog [base-branch] [target-branch]"
-  echo "  Default : base=master, target=branch aktif saat ini"
-  echo "  Contoh  :"
-  echo "    gfblog master                   → compare master vs current branch"
-  echo "    gfblog master feature/login     → compare master vs feature/login"
-  echo "  Tips    : base-branch / target-branch bisa diisi '.' untuk branch aktif saat ini"
-  echo ""
+  _gfb_sec "AI & tools"
+  _gfb_opt "gfbcm"        "generate commit message"
+  _gfb_opt "gfbpr"        "generate judul & deskripsi PR"
+  _gfb_opt "gfblarklink"  "link Lark (Story & Issue) dari nama branch"
 
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbpr — Generate PR title & description via AI"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbpr [base-branch] [target-branch] [-p provider] [-m model]"
-  echo "  Default : base=master, target=branch aktif, provider=groq"
-  echo "  Opsi    : -p / --provider  → groq (default) atau gemini"
-  echo "            -m / --model     → pilih model manual"
-  echo "  Contoh  :"
-  echo "    gfbpr master                          → groq, current branch"
-  echo "    gfbpr master kiki/feat/SP-829         → groq, branch spesifik"
-  echo "    gfbpr master -p gemini                → pakai Gemini"
-  echo "    gfbpr master -p groq -m llama3-8b-8192"
-  echo "    gfbpr master -p gemini -m gemini-1.5-pro"
-  echo "  Tips    : base-branch / target-branch bisa diisi '.' untuk branch aktif saat ini"
-  echo "  Setup   :"
-  echo "    export GROQ_API_KEY=\"gsk_xxxxxx\"      → https://console.groq.com"
-  echo "    export GEMINI_API_KEY=\"AIza_xxxxxx\"   → https://aistudio.google.com/apikey"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbcm — Generate commit message via AI (gaya GitHub Copilot)"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbcm [-p provider] [-m model]"
-  echo "  Sumber  : staged kalau ada; selain itu changes (unstaged + untracked)"
-  echo "  Opsi    : -p / --provider  → groq (default) atau gemini"
-  echo "            -m / --model     → pilih model manual"
-  echo "  Contoh  :"
-  echo "    gfbcm                                 → groq"
-  echo "    gfbcm -p gemini                       → pakai Gemini"
-  echo "  Tips    : git add sebagian file dulu kalau ingin message hanya untuk file itu"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbstatus — git status versi lengkap"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbstatus [-b base-branch] [-f] [-a] [-w [detik]]"
-  echo "  Isi     : branch & upstream (↑↓), posisi vs base, fetch terakhir,"
-  echo "            merge/rebase berjalan, conflict, staged, changes, untracked,"
-  echo "            ◐ file sebagian di-stage, 🚨 file sensitif (.env, *.pem, …) / besar (>5MB),"
-  echo "            stash, commit belum push/pull, saran langkah berikut"
-  echo "  Opsi    : -b / --base   → base pembanding (default: master, lalu main)"
-  echo "            -f / --fetch  → git fetch dulu supaya ↑↓ akurat"
-  echo "            -a / --all    → tampilkan semua file (default maks 20/bagian)"
-  echo "            -w / --watch  → refresh otomatis (default 3 detik), Ctrl+C keluar"
-  echo "            -r / --recap  → 🧠 recap AI: sebelumnya mengerjakan apa & kapan"
-  echo "            -p / -m       → provider (groq/gemini) & model untuk -r"
-  echo "  Contoh  :"
-  echo "    gfbstatus -r                          → status + recap via groq"
-  echo "    gfbstatus -r -p gemini                → recap via Gemini"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfblarklink — Generate link Lark (Story & Issue) dari nama branch"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfblarklink [branch-name] [-i id] [-p provider] [-m model]"
-  echo "  Default : branch=branch aktif, provider=groq"
-  echo "  Opsi    : -i / --id        → langsung pakai ID manual, skip deteksi"
-  echo "            -p / --provider  → groq (default) atau gemini, untuk deteksi ID"
-  echo "            -m / --model     → pilih model manual"
-  echo "  Contoh  :"
-  echo "    gfblarklink                                  → deteksi ID dari branch aktif"
-  echo "    gfblarklink kiki/feat/split-payment-23729368 → deteksi ID dari branch tertentu"
-  echo "    gfblarklink -i 23687966                      → langsung pakai ID manual"
-  echo "    gfblarklink . -p gemini                      → pakai Gemini untuk deteksi"
-  echo "  Output  : selalu tampilkan 2 link (Story & Issue), diurutkan mana yang"
-  echo "            lebih mungkin berdasar nama branch (mengandung 'fix' → Issue duluan)"
-  echo "  Tips    : kalau ID tidak ditemukan otomatis, akan diminta input manual"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbconflict — Cek conflict antar branch tanpa merge sungguhan"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbconflict <base-branch> <branch1> <branch2> ..."
-  echo "  Contoh  :"
-  echo "    gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927"
-  echo "    gfbconflict master kiki/fix/SP-960 kiki/feat/SP-829 kiki/feat/SP-927 kiki/feat/general-12-march"
-  echo "  Tips    : base-branch atau branch mana pun bisa diisi '.' untuk branch aktif saat ini"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbdel — Hapus branch di local dan remote sekaligus"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbdel [branch-name] [-f keyword] [-lo] [-ro]"
-  echo "  Opsi    : -f  / --filter       → filter list branch sebelum pilih"
-  echo "            -lo / --local-only   → hapus local saja"
-  echo "            -ro / --remote-only  → hapus remote saja"
-  echo "  Proteksi: master, main, develop, staging, production tidak bisa dihapus"
-  echo "  Contoh  :"
-  echo "    gfbdel                          → tampilkan list, pilih branch"
-  echo "    gfbdel kiki/feat/SP-829         → langsung hapus branch spesifik"
-  echo "    gfbdel -f feature               → filter list sebelum pilih"
-  echo "    gfbdel -lo kiki/feat/SP-829     → hapus local only"
-  echo "    gfbdel -ro kiki/feat/SP-829     → hapus remote only"
-  echo "  Tips    : branch-name bisa diisi '.' (akan ditolak karena tidak bisa hapus branch aktif)"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbrange — Tampilkan commit & file berubah antar dua hash"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbrange <hash1> <hash2> [-f keyword]"
-  echo "  Opsi    : -f / --filter  → filter path file"
-  echo "  Contoh  :"
-  echo "    gfbrange abc1234 def5678             → semua file"
-  echo "    gfbrange abc1234 def5678 -f services → filter path 'services'"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbcompare — Bandingkan dua branch secara menyeluruh"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbcompare <branch-a> <branch-b> [-f keyword]"
-  echo "  Opsi    : -f / --filter  → filter path file"
-  echo "  Tampilkan:"
-  echo "    - Common ancestor (titik diverge)"
-  echo "    - Ahead/behind count di kedua arah"
-  echo "    - Commit eksklusif di masing-masing branch"
-  echo "    - File yang berbeda antara kedua branch"
-  echo "  Contoh  :"
-  echo "    gfbcompare master feature/login"
-  echo "    gfbcompare develop kiki/feat/SP-829 -f src/services"
-  echo "  Tips    : branch-a / branch-b bisa diisi '.' untuk branch aktif saat ini"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbls — Tampilkan branch yang mengandung keyword tertentu"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbls <keyword> [-r]"
-  echo "  Info    : diurutkan dari branch yang terakhir digunakan + waktu relatif (🕒)"
-  echo "  Opsi    : -r / --remote  → include remote branches"
-  echo "  Contoh  :"
-  echo "    gfbls kiki                      → cari branch local mengandung 'kiki'"
-  echo "    gfbls feature -r                → cari termasuk remote"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbfind — Cari commit ada di branch mana saja"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbfind <commit-hash> [-r] [-f keyword]"
-  echo "  Opsi    : -r / --remote  → include remote branches"
-  echo "            -f / --filter  → filter nama branch"
-  echo "  Contoh  :"
-  echo "    gfbfind 56c97cde                → cari di local branches"
-  echo "    gfbfind 56c97cde -r             → cari termasuk remote"
-  echo "    gfbfind 56c97cde -r -f feature  → cari + filter nama branch"
-  echo ""
-
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  gfbmain — Tampilkan bantuan semua perintah GFB"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "  Usage   : gfbmain --help"
-  echo ""
+  _gfb_sec "Konvensi"
+  _gfb_opt "@"            "nama branch aktif (\".\" cara lama juga masih jalan)"
+  _gfb_opt "<perintah> -h" "bantuan detail, contoh: gfb -h"
+  _gfb_opt "gfbmain <cmd>" "sama dengan <cmd> -h"
+  print
 }
 
 # Added by Antigravity CLI installer
