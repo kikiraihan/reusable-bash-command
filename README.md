@@ -51,6 +51,56 @@ Contoh:
 
 ---
 
+## my-commits.sh
+
+Laporan commit milik sendiri dari banyak project sekaligus: pilih rentang tanggal, project, dan branch
+(bisa wildcard seperti `*kiki*`). Report bisa tampil di terminal, disimpan ke file, atau dirangkum AI
+jadi daily standup / weekly report. Detail lengkap ada di [`my-commit-readme.txt`](my-commit-readme.txt).
+
+```bash
+./my-commits.sh --show
+```
+
+![Contoh my-commits.sh --show](screenshots/my-commits.png)
+
+---
+
+## git-featuring-branch (gfb)
+
+Kumpulan fungsi zsh untuk alur kerja feature branch. Pasang dengan `source` dari `~/.zshrc`:
+
+```bash
+source /path/to/reusable-bash-command/git-featuring-branch
+```
+
+Ketik `gfbmain` untuk daftar semua perintah, atau `gfbmain help <cmd>` / `<cmd> -h` untuk bantuan detail.
+
+### Contoh penggunaan
+
+**`gfbmain`** — ringkasan semua perintah
+
+![gfbmain](screenshots/gfbmain.png)
+
+**`gfbstatus`** — git status versi lengkap: upstream, posisi terhadap base, staged/changes/untracked, commit belum di-push, dan langkah berikut
+
+![gfbstatus](screenshots/gfbstatus.png)
+
+**`gfbls`** — daftar branch, urut terakhir dipakai, dengan status sinkron ke origin
+
+![gfbls](screenshots/gfbls.png)
+
+**`gfblog main`** — commit di branch aktif yang belum ada di base
+
+![gfblog](screenshots/gfblog.png)
+
+**`gfbcompare main feature/payment-webhook`** — bandingkan dua branch: common ancestor, commit yang hanya ada di masing-masing, dan file yang berbeda
+
+![gfbcompare](screenshots/gfbcompare.png)
+
+> Screenshot diambil dari repo demo (`api-gateway`, `web-dashboard`, `mobile-app`) dengan data commit contoh.
+
+---
+
 ## Others
 
 Script lain akan ditambahkan di sini bila tersedia.
