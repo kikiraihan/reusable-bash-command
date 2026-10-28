@@ -41,8 +41,68 @@ OUTPUT_MODE=""          # show | file | daily | weekly (kosong = tanya interakti
 AI_PROVIDER="groq"      # groq (default) / gemini
 AI_MODEL=""             # kosong = pakai default per provider
 
+# --- UI helpers -------------------------------------------------------------
+# Gaya sama dengan perintah gfb* (git-featuring-branch):
+#   ◆ judul   › langkah   ✔ sukses   ▲ peringatan   ✖ error   ℹ info   ? pertanyaan
+#   Simbol di kolom 2, isi/detail di kolom 4, label key-value redup & rata kiri.
+# Warna otomatis mati kalau output bukan terminal atau NO_COLOR di-set.
+if [ -z "$NO_COLOR" ] && [ -t 1 ]; then
+    B=$'\e[1m' D=$'\e[2m' N=$'\e[0m' G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' C=$'\e[36m' M=$'\e[35m'
+    GH=$'\e[90m'    # abu-abu untuk ghost suggestion
+else
+    B='' D='' N='' G='' R='' Y='' C='' M='' GH=''
+fi
+
+# UI_AFTER_HEAD: section tepat setelah judul tidak perlu baris kosong lagi
+ui_head()   { echo; printf '  %s◆%s %s%s%s%s\n' "$C" "$N" "$B" "$1" "$N" "${2:+  $D$2$N}"; echo; UI_AFTER_HEAD=1; }
+ui_sec()    { [ -z "$UI_AFTER_HEAD" ] && echo; UI_AFTER_HEAD=''; printf '  %s%s%s%s\n' "$B" "$1" "$N" "${2:+  $D$2$N}"; }
+ui_kv()     { UI_AFTER_HEAD=''; printf "    ${D}%-9s${N} %s\n" "$1" "$2"; }
+ui_step()   { UI_AFTER_HEAD=''; printf '  %s›%s %s\n' "$C" "$N" "$*"; }
+ui_ok()     { UI_AFTER_HEAD=''; printf '  %s✔%s %s\n' "$G" "$N" "$*"; }
+ui_warn()   { UI_AFTER_HEAD=''; printf '  %s▲%s %s\n' "$Y" "$N" "$*"; }
+ui_err()    { UI_AFTER_HEAD=''; printf '  %s✖%s %s\n' "$R" "$N" "$*" >&2; }
+ui_info()   { UI_AFTER_HEAD=''; printf '  %sℹ%s %s\n' "$C" "$N" "$*"; }
+ui_note()   { UI_AFTER_HEAD=''; printf '    %s%s%s\n' "$D" "$*" "$N"; }
+ui_item()   { UI_AFTER_HEAD=''; printf "    ${D}%3s${N}  %s\n" "$1" "$2"; }
+ui_rule()   { UI_AFTER_HEAD=''; printf '  %s────────────────────────────────────────────────────────%s\n' "$D" "$N"; }
+ui_use()    { UI_AFTER_HEAD=''; printf '    %s%s%s\n' "$B" "$*" "$N"; }
+ui_opt()    { UI_AFTER_HEAD=''; printf "    ${C}%-20s${N} %s\n" "$1" "$2"; }
+ui_ex()     { UI_AFTER_HEAD=''; printf "    %-40s ${D}%s${N}\n" "$1" "$2"; }
+
+# Hapus 1 baris terakhir (untuk menghapus baris "› Generating…")
+ui_unwait() { [ -t 1 ] && printf '\e[1A\e[2K'; }
+
+# Cetak blok teks menjorok 4 spasi di antara dua garis
+ui_block() {
+    ui_rule
+    printf '%s\n' "$1" | sed 's/^/    /'
+    ui_rule
+}
+
 show_help() {
-    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+    ui_head "my-commits.sh" "laporan commit kamu dari banyak project"
+    ui_sec "Pemakaian"
+    ui_use "./my-commits.sh [--show|--file|--daily|--weekly] [-p provider] [-m model]"
+    ui_note "jalankan dari folder yang berisi project-project git"
+    ui_sec "Mode output"
+    ui_opt "--show" "tampilkan raw commit report (default)"
+    ui_opt "--file" "simpan ke commits_<from>_to_<to>.txt"
+    ui_opt "--daily" "Daily Standup Report via AI"
+    ui_opt "--weekly" "Weekly Progress Report via AI (2 tahap)"
+    ui_note "tanpa flag mode → ditanya setelah commit terkumpul"
+    ui_sec "Opsi AI"
+    ui_opt "-p, --provider" "groq (default) atau gemini"
+    ui_opt "-m, --model" "default: qwen/qwen3.8-27b · gemini-2.0-flash"
+    ui_opt "-h, --help" "bantuan ini"
+    ui_sec "Contoh"
+    ui_ex "./my-commits.sh" "interaktif"
+    ui_ex "./my-commits.sh --daily" "langsung daily standup"
+    ui_ex "./my-commits.sh --weekly -p gemini" "weekly pakai Gemini"
+    ui_sec "Setup AI"
+    ui_ex 'export GROQ_API_KEY="gsk_xxxxxx"' "console.groq.com"
+    ui_ex 'export GEMINI_API_KEY="AIza_xxxxxx"' "aistudio.google.com/apikey"
+    ui_note "atau isi MY_GROQ_API_KEY / MY_GEMINI_API_KEY di atas script"
+    echo
 }
 
 # Parsing argumen
@@ -56,19 +116,15 @@ while [[ $# -gt 0 ]]; do
         -m|--model)    AI_MODEL="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *)
-            echo "Unknown option: $1"
-            echo ""
-            show_help
+            ui_err "Option tidak dikenal: $1"
+            ui_note "Lihat bantuan: $0 -h" >&2
             exit 1
             ;;
     esac
     shift
 done
 
-echo "=================================================="
-echo "       Git Multi-Project Commit Reporter"
-echo "=================================================="
-echo ""
+ui_head "my-commits" "laporan commit dari banyak project"
 
 # Function to validate date format
 validate_date() {
@@ -86,11 +142,6 @@ validate_date() {
 # Tab / → untuk memakainya, atau langsung ketik untuk mengabaikannya.
 LAST_INPUT_FILE="$HOME/.my_commits_last_input"
 
-C_PROMPT=$'\033[1;36m'  # cyan tebal
-C_GHOST=$'\033[90m'     # abu-abu
-C_DIM=$'\033[2m'
-C_RESET=$'\033[0m'
-
 get_last_input() {
     [ -f "$LAST_INPUT_FILE" ] || return 0
     grep -m1 "^$1=" "$LAST_INPUT_FILE" | cut -d= -f2-
@@ -105,15 +156,15 @@ save_last_input() {
     mv "$tmp" "$LAST_INPUT_FILE"
 }
 
-# read_with_last VAR KEY PROMPT
-# Prompt tanpa ": " di akhir. Line editor kecil ala fish autosuggestion:
+# read_with_last VAR KEY PERTANYAAN [PETUNJUK]
+# Prompt gaya gfb ("? pertanyaan petunjuk"). Line editor kecil ala fish autosuggestion:
 # - input kosong  → input terakhir tampil abu-abu di belakang kursor
 # - Tab / →       → terima suggestion, lalu masih bisa diedit
 # - ketik apa saja → suggestion diabaikan; hapus sampai kosong → muncul lagi
 # Key lain: ← → Home End Backspace Delete, Ctrl-A/E/U/W.
 read_with_last() {
     local var="$1" key="$2" last buf="" pos=0 k c seq prompt
-    prompt="${C_PROMPT}?${C_RESET} $3: "
+    prompt="  ${M}?${N} ${B}$3${N}${4:+ ${D}$4${N}} "
     last="$(get_last_input "$key")"
 
     # Bukan terminal (pipe/redirect): baca biasa
@@ -127,7 +178,7 @@ read_with_last() {
         printf '\r\033[K%s%s' "$prompt" "$buf"
         if [ -z "$buf" ] && [ -n "$last" ]; then
             # Simpan posisi kursor, tulis ghost, balikkan kursor
-            printf '\0337%s%s  %s⇥ Tab%s\0338' "$C_GHOST" "$last" "$C_DIM" "$C_RESET"
+            printf '\0337%s%s  %s⇥ Tab%s\0338' "$GH" "$last" "$D" "$N"
         elif (( pos < ${#buf} )); then
             printf '\033[%dD' $(( ${#buf} - pos ))
         fi
@@ -202,13 +253,14 @@ copy_to_clipboard() {
 ask_copy() {
     local content="$1"
     local copy_ans
-    read_with_last copy_ans copy "📋 Copy result ke clipboard? (y/N)"
+    echo
+    read_with_last copy_ans copy "Copy ke clipboard?" "[y/N]"
     save_last_input copy "$copy_ans"
     if [[ "$copy_ans" == "y" || "$copy_ans" == "Y" ]]; then
         if copy_to_clipboard "$content"; then
-            echo "✅ Sudah di-copy ke clipboard!"
+            ui_ok "Sudah di-copy ke clipboard."
         else
-            echo "⚠️  Tidak ada tool clipboard (pbcopy/wl-copy/xclip/xsel/clip.exe)."
+            ui_warn "Tidak ada tool clipboard (pbcopy/wl-copy/xclip/xsel/clip.exe)."
         fi
     fi
 }
@@ -219,32 +271,32 @@ prepare_ai() {
         groq)   [ -z "$AI_MODEL" ] && AI_MODEL="qwen/qwen3.8-27b" ;;
         gemini) [ -z "$AI_MODEL" ] && AI_MODEL="gemini-2.0-flash" ;;
         *)
-            echo "❌ Provider tidak dikenal: '$AI_PROVIDER'. Pilih: groq / gemini"
+            ui_err "Provider tidak dikenal: '$AI_PROVIDER'. Pilih: groq / gemini"
             return 1
             ;;
     esac
 
     if [ "$AI_PROVIDER" = "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-        echo "❌ GROQ_API_KEY belum di-set."
-        echo "Daftar gratis di https://console.groq.com lalu isi salah satu:"
-        echo "  - variable MY_GROQ_API_KEY di bagian atas $0"
-        echo "  - atau: export GROQ_API_KEY=\"gsk_xxxxxx\""
+        ui_err "GROQ_API_KEY belum di-set."
+        ui_note "Daftar gratis di https://console.groq.com, lalu isi salah satu:" >&2
+        ui_note "variable MY_GROQ_API_KEY di bagian atas $0" >&2
+        ui_note "export GROQ_API_KEY=\"gsk_xxxxxx\"" >&2
         return 1
     fi
     if [ "$AI_PROVIDER" = "gemini" ] && [ -z "$GEMINI_API_KEY" ]; then
-        echo "❌ GEMINI_API_KEY belum di-set."
-        echo "Daftar gratis di https://aistudio.google.com/apikey lalu isi salah satu:"
-        echo "  - variable MY_GEMINI_API_KEY di bagian atas $0"
-        echo "  - atau: export GEMINI_API_KEY=\"AIza_xxxxxx\""
+        ui_err "GEMINI_API_KEY belum di-set."
+        ui_note "Daftar gratis di https://aistudio.google.com/apikey, lalu isi salah satu:" >&2
+        ui_note "variable MY_GEMINI_API_KEY di bagian atas $0" >&2
+        ui_note "export GEMINI_API_KEY=\"AIza_xxxxxx\"" >&2
         return 1
     fi
 
     if ! command -v python3 >/dev/null 2>&1; then
-        echo "❌ python3 tidak ditemukan (dipakai untuk build & parse JSON)."
+        ui_err "python3 tidak ditemukan (dipakai untuk build & parse JSON)."
         return 1
     fi
     if ! command -v curl >/dev/null 2>&1; then
-        echo "❌ curl tidak ditemukan."
+        ui_err "curl tidak ditemukan."
         return 1
     fi
 
@@ -308,11 +360,11 @@ print(txt)
 " "$response" "$AI_PROVIDER" 2>/dev/null)
 
     if [[ "$result" == __ERR__* ]]; then
-        echo "❌ API error: ${result#__ERR__}" >&2
+        ui_err "API error: ${result#__ERR__}"
         return 1
     fi
     if [ -z "$result" ]; then
-        echo "❌ AI tidak mengembalikan hasil apapun." >&2
+        ui_err "AI tidak mengembalikan hasil apapun."
         return 1
     fi
 
@@ -322,7 +374,7 @@ print(txt)
 # Baca input multi-baris sampai baris kosong
 read_multiline() {
     local line acc=""
-    while IFS= read -r line; do
+    while IFS= read -r -p "    ${D}›${N} " line; do
         [ -z "$line" ] && break
         acc="${acc}${line}"$'\n'
     done
@@ -357,16 +409,12 @@ PROMPT_EOF
     prompt="$prompt
 $report"
 
-    echo "⏳ Generating Daily Report ($AI_PROVIDER / $AI_MODEL)..."
-    echo ""
+    ui_sec "Daily Standup Report" "$AI_PROVIDER · $AI_MODEL"
+    ui_step "Generating…"
     result="$(call_ai "$prompt")" || return 1
+    ui_unwait
 
-    echo "=================================================="
-    echo "              DAILY STANDUP REPORT"
-    echo "=================================================="
-    echo ""
-    printf '%s\n' "$result"
-    echo ""
+    ui_block "$result"
     ask_copy "$result"
 }
 
@@ -375,8 +423,10 @@ generate_weekly_report() {
     local report="$1"
     local next_tasks feedback prompt1 prompt2 analysis result
 
-    echo ""
-    echo "📅 Rencana minggu depan (opsional). Satu task per baris, akhiri dengan baris kosong:"
+    ui_sec "Weekly Progress Report" "$AI_PROVIDER · $AI_MODEL"
+    echo
+    printf '  %s?%s %sRencana minggu depan%s %s(opsional)%s\n' "$M" "$N" "$B" "$N" "$D" "$N"
+    ui_note "satu task per baris, Enter di baris kosong untuk selesai"
     next_tasks="$(read_multiline)"
     [ -z "$next_tasks" ] && next_tasks="(none provided)"
 
@@ -414,15 +464,15 @@ PROMPT_EOF
     prompt1="$prompt1
 $report"
 
-    echo ""
-    echo "⏳ Analyzing commits ($AI_PROVIDER / $AI_MODEL)..."
-    echo ""
+    echo
+    ui_step "Menganalisa commit… (tahap 1/2)"
     analysis="$(call_ai "$prompt1")" || return 1
+    ui_unwait
 
-    printf '%s\n' "$analysis"
-    echo ""
-    echo "✏️  Koreksi/tambahan (persentase, issues, notes). Satu per baris,"
-    echo "    langsung Enter kosong kalau sudah setuju semua:"
+    ui_block "$analysis"
+    echo
+    printf '  %s?%s %sKoreksi / tambahan%s %s(persentase, issues, notes)%s\n' "$M" "$N" "$B" "$N" "$D" "$N"
+    ui_note "satu per baris, langsung Enter kosong kalau sudah setuju semua"
     feedback="$(read_multiline)"
     [ -z "$feedback" ] && feedback="(the user agreed with the analysis above, no changes)"
 
@@ -476,48 +526,40 @@ $next_tasks
 Here is the commit report:
 $report"
 
-    echo ""
-    echo "⏳ Generating Weekly Report ($AI_PROVIDER / $AI_MODEL)..."
-    echo ""
+    echo
+    ui_step "Generating report… (tahap 2/2)"
     result="$(call_ai "$prompt2")" || return 1
+    ui_unwait
 
-    echo "=================================================="
-    echo "              WEEKLY PROGRESS REPORT"
-    echo "=================================================="
-    echo ""
-    printf '%s\n' "$result"
-    echo ""
+    ui_block "$result"
     ask_copy "$result"
 }
 
 # Get date range from user
 CURRENT_DATE=$(date +%Y-%m-%d)
 
+ui_sec "Rentang tanggal"
 while true; do
-    read_with_last FROM_DATE from_date "Enter start date (YYYY-MM-DD) [$CURRENT_DATE]"
+    read_with_last FROM_DATE from_date "Tanggal mulai" "YYYY-MM-DD, kosong = $CURRENT_DATE"
     FROM_DATE=${FROM_DATE:-$CURRENT_DATE}
     if validate_date "$FROM_DATE"; then
         save_last_input from_date "$FROM_DATE"
         break
     else
-        echo "Invalid date format. Please use YYYY-MM-DD"
+        ui_warn "Format tanggal salah, pakai YYYY-MM-DD"
     fi
 done
 
 while true; do
-    read_with_last TO_DATE to_date "Enter end date (YYYY-MM-DD) [$CURRENT_DATE]"
+    read_with_last TO_DATE to_date "Tanggal akhir" "YYYY-MM-DD, kosong = $CURRENT_DATE"
     TO_DATE=${TO_DATE:-$CURRENT_DATE}
     if validate_date "$TO_DATE"; then
         save_last_input to_date "$TO_DATE"
         break
     else
-        echo "Invalid date format. Please use YYYY-MM-DD"
+        ui_warn "Format tanggal salah, pakai YYYY-MM-DD"
     fi
 done
-
-echo ""
-echo "Scanning for project folders..."
-echo ""
 
 # Get current directory
 CURRENT_DIR=$(pwd)
@@ -529,26 +571,24 @@ while IFS= read -r folder; do
 done < <(ls -d */ 2>/dev/null | sed 's|/$||' | grep -v -E "^(node_modules|vendor|dist|build|\\.)" || true)
 
 if [ ${#FOLDERS[@]} -eq 0 ]; then
-    echo "No folders found in current directory!"
+    ui_err "Tidak ada folder di direktori ini."
     exit 1
 fi
 
 # Display available folders
-echo "Available project folders:"
-echo ""
+ui_sec "Project" "${#FOLDERS[@]} folder"
 for i in "${!FOLDERS[@]}"; do
     folder="${FOLDERS[$i]}"
     # Check if it's a git repository
     if [ -d "$folder/.git" ]; then
-        echo "  [$((i+1))] $folder [GIT]"
+        ui_item "$((i+1))" "$folder"
     else
-        echo "  [$((i+1))] $folder"
+        ui_item "$((i+1))" "$D$folder  (bukan git)$N"
     fi
 done
 
-echo ""
-echo "Select folders (comma-separated numbers, or 'all' for all folders):"
-read_with_last SELECTION folder_selection "Selection"
+echo
+read_with_last SELECTION folder_selection "Pilih project" "nomor dipisah koma, atau all"
 save_last_input folder_selection "$SELECTION"
 
 # Parse selection
@@ -567,31 +607,28 @@ else
             if [ $index -ge 0 ] && [ $index -lt ${#FOLDERS[@]} ]; then
                 SELECTED_FOLDERS+=("${FOLDERS[$index]}")
             else
-                echo "Warning: Invalid selection '$sel' - skipping"
+                ui_warn "Nomor '$sel' tidak ada, dilewati."
             fi
         else
-            echo "Warning: Invalid input '$sel' - skipping"
+            ui_warn "Input '$sel' tidak valid, dilewati."
         fi
     done
 fi
 
 if [ ${#SELECTED_FOLDERS[@]} -eq 0 ]; then
-    echo "No folders selected!"
+    ui_err "Tidak ada project yang dipilih."
     exit 1
 fi
 
-echo ""
-echo "Selected folders: ${SELECTED_FOLDERS[*]}"
-echo ""
+ui_ok "${#SELECTED_FOLDERS[@]} project: ${SELECTED_FOLDERS[*]}"
 
 # --- Branch Selection Logic ---
-echo "Scanning branches in selected projects..."
+ui_sec "Branch"
+ui_step "Scan branch…"
 
 # Arrays to store options
 # OPTION_PAIRS stores "PROJECT_NAME:BRANCH_NAME"
 OPTION_PAIRS=()
-# OPTION_DISPLAY stores "[PROJECT_NAME][BRANCH_NAME]"
-OPTION_DISPLAY=()
 
 TEMP_FILE="$CURRENT_DIR/.my_commits_tmp_branches"
 > "$TEMP_FILE"
@@ -608,40 +645,44 @@ for FOLDER in "${SELECTED_FOLDERS[@]}"; do
         cd "$CURRENT_DIR"
     fi
 done
+ui_unwait
 
 # Sort and deduplicate the list
 if [ -s "$TEMP_FILE" ]; then
     sort -u "$TEMP_FILE" > "${TEMP_FILE}.sorted"
     mv "${TEMP_FILE}.sorted" "$TEMP_FILE"
-    
+
     while IFS= read -r line; do
         OPTION_PAIRS+=("$line")
-        p_name="${line%%:*}"
-        b_name="${line##*:}"
-        OPTION_DISPLAY+=("[$p_name][$b_name]")
     done < "$TEMP_FILE"
-    rm "$TEMP_FILE"
 fi
+rm -f "$TEMP_FILE"
 
 SELECTED_PAIRS=() # Stores specific "PROJECT:BRANCH"
 GLOBAL_BRANCHES=() # Stores "branchname" (for manual input applied to all)
 
 if [ ${#OPTION_PAIRS[@]} -eq 0 ]; then
-    echo "No branches found! Defaulting to 'kikidev'."
+    ui_warn "Tidak ada branch ditemukan, pakai default 'kikidev'."
     GLOBAL_BRANCHES=("kikidev")
 else
-    echo ""
-    echo "Available branches:"
-    echo ""
-    for i in "${!OPTION_DISPLAY[@]}"; do
-        echo "  [$((i+1))] ${OPTION_DISPLAY[$i]}"
+    # Tampilkan per project, nomor tetap berurutan global
+    last_project=""
+    for i in "${!OPTION_PAIRS[@]}"; do
+        p_name="${OPTION_PAIRS[$i]%%:*}"
+        b_name="${OPTION_PAIRS[$i]##*:}"
+        if [ "$p_name" != "$last_project" ]; then
+            [ -n "$last_project" ] && echo
+            printf '    %s%s%s\n' "$C" "$p_name" "$N"
+            last_project="$p_name"
+        fi
+        ui_item "$((i+1))" "$b_name"
     done
 
-    echo ""
-    echo "Select branches (comma-separated numbers, 'all', or type a name manually):"
-    echo "  Wildcards supported: *kiki* (contains), kiki* (starts with), *kiki (ends with)"
-    echo "  You can also include general branches: e.g. *kiki*, master, main, develop, staging"
-    read_with_last BRANCH_SELECTION branch_selection "Selection"
+    echo
+    ui_note "nomor dipisah koma, 'all', atau nama branch manual"
+    ui_note "wildcard: *kiki* (mengandung) · kiki* (diawali) · *kiki (diakhiri)"
+    ui_note "bisa digabung: *kiki*, master, main, develop, staging"
+    read_with_last BRANCH_SELECTION branch_selection "Pilih branch"
     save_last_input branch_selection "$BRANCH_SELECTION"
 
     if [ "$BRANCH_SELECTION" = "all" ]; then
@@ -656,7 +697,7 @@ else
                 if [ $index -ge 0 ] && [ $index -lt ${#OPTION_PAIRS[@]} ]; then
                     SELECTED_PAIRS+=("${OPTION_PAIRS[$index]}")
                 else
-                    echo "Warning: Invalid selection '$sel' - skipping"
+                    ui_warn "Nomor '$sel' tidak ada, dilewati."
                 fi
             fi
         done
@@ -675,9 +716,9 @@ else
                     fi
                 done
                 if [ $match_count -eq 0 ]; then
-                    echo "Warning: No branches matching pattern '$branch'"
+                    ui_warn "Tidak ada branch yang cocok dengan '$branch'"
                 else
-                    echo "Matched $match_count branch(es) for pattern '$branch'"
+                    ui_ok "$match_count branch cocok dengan '$branch'"
                 fi
             else
                 GLOBAL_BRANCHES+=("$branch")
@@ -688,7 +729,7 @@ fi
 
 # Fallback
 if [ ${#SELECTED_PAIRS[@]} -eq 0 ] && [ ${#GLOBAL_BRANCHES[@]} -eq 0 ]; then
-    echo "No valid branches selected. Defaulting to 'kikidev' for all projects."
+    ui_warn "Tidak ada branch valid, pakai default 'kikidev' untuk semua project."
     GLOBAL_BRANCHES=("kikidev")
 fi
 
@@ -711,7 +752,8 @@ CURRENT_USER=$(git config user.email 2>/dev/null || git config --global user.ema
 CURRENT_NAME=$(git config user.name 2>/dev/null || git config --global user.name)
 
 if [ -z "$CURRENT_USER" ]; then
-    echo "Error: Git user email not configured"
+    ui_err "Git user email belum dikonfigurasi."
+    ui_note "git config --global user.email \"kamu@contoh.com\"" >&2
     exit 1
 fi
 
@@ -723,6 +765,9 @@ FINAL_OUTPUT_PATH="$SCRIPT_DIR/$OUTPUT_FILE"
 # (paling bawah) diputuskan mau ditampilkan / disimpan jadi file / dikirim ke AI.
 OUTPUT_PATH="$(mktemp "${TMPDIR:-/tmp}/my_commits_XXXXXX")"
 trap 'rm -f "$OUTPUT_PATH"' EXIT
+
+echo
+ui_step "Mengumpulkan commit…"
 
 # Create output file
 > "$OUTPUT_PATH"
@@ -759,7 +804,7 @@ for FOLDER in "${SELECTED_FOLDERS[@]}"; do
 
     # Determine branches to check for THIS project
     TARGET_BRANCHES=()
-    
+
     # 1. Add manual global branches
     for b in "${GLOBAL_BRANCHES[@]}"; do
         TARGET_BRANCHES+=("$b")
@@ -799,7 +844,7 @@ for FOLDER in "${SELECTED_FOLDERS[@]}"; do
 
     for BRANCH in "${TARGET_BRANCHES[@]}"; do
         if [ -z "$BRANCH" ]; then continue; fi
-        
+
         echo "" >> "$OUTPUT_PATH"
         echo "  ### Branch: $BRANCH ###" >> "$OUTPUT_PATH"
         echo "" >> "$OUTPUT_PATH"
@@ -861,22 +906,23 @@ echo "==================================================" >> "$OUTPUT_PATH"
 
 REPORT_CONTENT="$(cat "$OUTPUT_PATH")"
 
-echo ""
-echo "✓ Commit report generated successfully!"
-echo "  Date range: $FROM_DATE to $TO_DATE"
-echo "  Total commits: $TOTAL_COMMITS"
-echo ""
+ui_unwait
+ui_ok "Commit report selesai."
+ui_kv "author" "$CURRENT_NAME <$CURRENT_USER>"
+ui_kv "tanggal" "$FROM_DATE → $TO_DATE"
+ui_kv "branch" "${ALL_BRANCH_NAMES[*]}"
+ui_kv "project" "$PROJECTS_PROCESSED"
+ui_kv "commit" "$TOTAL_COMMITS"
 
 # Kalau mode belum ditentukan lewat option, tanya sekarang
 if [ -z "$OUTPUT_MODE" ]; then
-    echo "Mau diapakan report ini?"
-    echo ""
-    echo "  [1] Tampilkan raw commit report (default)"
-    echo "  [2] Generate Daily Standup Report (AI)"
-    echo "  [3] Generate Weekly Progress Report (AI)"
-    echo "  [4] Simpan ke file"
-    echo ""
-    read_with_last MODE_SELECTION mode_selection "Selection [1]"
+    ui_sec "Output"
+    ui_item 1 "Tampilkan raw commit report $D(default)$N"
+    ui_item 2 "Daily Standup Report $D(AI)$N"
+    ui_item 3 "Weekly Progress Report $D(AI)$N"
+    ui_item 4 "Simpan ke file"
+    echo
+    read_with_last MODE_SELECTION mode_selection "Mau diapakan report ini?" "[1]"
     save_last_input mode_selection "${MODE_SELECTION:-1}"
     case "${MODE_SELECTION:-1}" in
         1) OUTPUT_MODE="show" ;;
@@ -884,35 +930,37 @@ if [ -z "$OUTPUT_MODE" ]; then
         3) OUTPUT_MODE="weekly" ;;
         4) OUTPUT_MODE="file" ;;
         *)
-            echo "Warning: Pilihan '$MODE_SELECTION' tidak dikenal - tampilkan raw report"
+            ui_warn "Pilihan '$MODE_SELECTION' tidak dikenal, tampilkan raw report."
             OUTPUT_MODE="show"
             ;;
     esac
-    echo ""
 fi
 
 case "$OUTPUT_MODE" in
     file)
         mv "$OUTPUT_PATH" "$FINAL_OUTPUT_PATH"
-        echo "  File: $FINAL_OUTPUT_PATH"
-        echo ""
+        echo
+        ui_ok "Report disimpan."
+        ui_kv "file" "$FINAL_OUTPUT_PATH"
+        echo
         ;;
 
     show)
-        echo "$REPORT_CONTENT"
-        echo ""
+        ui_sec "Raw commit report"
+        ui_block "$REPORT_CONTENT"
         ask_copy "$REPORT_CONTENT"
-        echo ""
+        echo
         ;;
 
     daily|weekly)
         if ! prepare_ai; then
-            echo ""
-            echo "ℹ️  Report tetap bisa dilihat/disimpan manual, jalankan ulang dengan --show atau --file."
+            ui_info "Report tetap bisa dilihat/disimpan manual: jalankan ulang dengan --show atau --file."
             exit 1
         fi
         if [ "$TOTAL_COMMITS" -eq 0 ]; then
-            echo "⚠️  Tidak ada commit di rentang tanggal ini, tidak ada yang bisa dilaporkan."
+            echo
+            ui_warn "Tidak ada commit di rentang tanggal ini, tidak ada yang bisa dilaporkan."
+            echo
             exit 0
         fi
         if [ "$OUTPUT_MODE" = "daily" ]; then
@@ -920,6 +968,6 @@ case "$OUTPUT_MODE" in
         else
             generate_weekly_report "$REPORT_CONTENT" || exit 1
         fi
-        echo ""
+        echo
         ;;
 esac
