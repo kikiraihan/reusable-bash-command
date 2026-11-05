@@ -1199,6 +1199,10 @@ $commits"
 #   gfbcm
 #   gfbcm -p gemini
 #   gfbcm -p groq -m llama3-8b-8192
+#   gfbcm -a        → git add -A, generate, lalu langsung commit
+#   gfbcm -c        → generate, lalu commit yang sudah di-stage
+#   gfbcm -a -y     → tanpa konfirmasi
+#   gfbcm -n        → generate message saja, tanpa ditawari commit
 # ════════════════════════════════════════════════════════════════════
 _gfbcm_usage() {
   _gfb_head "gfbcm" "generate commit message via AI"
@@ -1206,15 +1210,24 @@ _gfbcm_usage() {
   _gfb_text "Generate commit message gaya Conventional Commits dari perubahan"
   _gfb_text "yang sedang dikerjakan memakai AI, lalu bisa di-copy ke clipboard."
   _gfb_sec "Pemakaian"
-  _gfb_use "gfbcm [-p provider] [-m model]"
+  _gfb_use "gfbcm [-a|-c|-n] [-y] [-p provider] [-m model]"
   _gfb_note "sumber: staged kalau ada, selain itu changes (unstaged + untracked)"
+  _gfb_note "tanpa flag: setelah message tampil, ditawari commit (N = tidak, lalu copy)"
   _gfb_sec "Opsi"
   _gfb_opt "-p, --provider" "groq (default) atau gemini"
   _gfb_opt "-m, --model" "pilih model manual"
+  _gfb_opt "-a, --all" "git add -A dulu, lalu commit dengan message hasil AI"
+  _gfb_opt "-c, --commit" "commit yang sudah di-stage dengan message hasil AI"
+  _gfb_opt "-n, --no-commit" "generate message saja (tanpa tawaran commit), lalu copy"
+  _gfb_opt "-y, --yes" "commit tanpa konfirmasi (dengan -a / -c)"
   _gfb_opt "-h, --help" "bantuan ini"
   _gfb_sec "Contoh"
   _gfb_ex "gfbcm" "groq"
   _gfb_ex "gfbcm -p gemini" "pakai Gemini"
+  _gfb_ex "gfbcm -a" "add semua + commit (konfirmasi dulu)"
+  _gfb_ex "gfbcm -a -y" "add semua + commit langsung"
+  _gfb_ex "gfbcm -c" "commit yang sudah di-stage saja"
+  _gfb_ex "gfbcm -n" "generate message saja, tidak commit"
   _gfb_sec "Tips"
   _gfb_note "git add sebagian file dulu kalau message hanya untuk file itu."
   print
@@ -1222,12 +1235,19 @@ _gfbcm_usage() {
 
 gfbcm() {
   local provider="groq" model="" max_diff_chars=12000
+  local commit_mode="" yes=false no_commit=false
 
   while [[ "$#" -gt 0 ]]; do
     case $1 in
       -h|--help) _gfbcm_usage; return 0 ;;
       -p|--provider) provider="$2"; shift ;;
       -m|--model) model="$2"; shift ;;
+      -a|--all) commit_mode="all" ;;
+      -c|--commit) [ -z "$commit_mode" ] && commit_mode="staged" ;;
+      -y|--yes) yes=true ;;
+      -n|--no-commit) no_commit=true ;;
+      -ay|-ya) commit_mode="all"; yes=true ;;
+      -cy|-yc) [ -z "$commit_mode" ] && commit_mode="staged"; yes=true ;;
       *) _gfb_bad gfbcm "Argumen tidak dikenal: $1"; return 1 ;;
     esac
     shift
@@ -1236,6 +1256,9 @@ gfbcm() {
   [ -z "$model" ] && { model=$(_gfb_ai_model "$provider") || return 1; }
   _gfb_ai_key "$provider" || return 1
   _gfb_repo || return 1
+  if [[ "$no_commit" == true && -n "$commit_mode" ]]; then
+    _gfb_bad gfbcm "-n tidak bisa digabung dengan -a / -c"; return 1
+  fi
 
   local B D N G R Y C M; _gfb_pal
 
@@ -1246,6 +1269,15 @@ gfbcm() {
   # Selalu baca perubahan dari root repo, walau dipanggil dari subfolder
   local __gfb_here=$PWD
   builtin cd -q "$(git rev-parse --show-toplevel)" || return 1
+
+  # -a: stage semua perubahan (termasuk file baru & terhapus) sebelum generate
+  if [[ "$commit_mode" == all ]]; then
+    git add -A || { builtin cd -q "$__gfb_here"; return 1; }
+  elif [[ "$commit_mode" == staged ]] && git diff --cached --quiet; then
+    builtin cd -q "$__gfb_here"
+    _gfb_err "Belum ada yang di-stage. Pakai ${B}gfbcm -a${N} untuk add semua, atau git add dulu."
+    return 1
+  fi
 
   local source_label files diff
   local -a untracked=()
@@ -1324,10 +1356,73 @@ $diff"
   print -r -- "$result" | sed 's/^/    /'
   _gfb_rule
 
-  if _gfb_confirm "Copy ke clipboard?" n; then
-    _gfb_copy "$result"
+  # -n: generate saja — perilaku lama (tawarkan copy)
+  if [[ "$no_commit" == true ]]; then
+    _gfb_confirm "Copy ke clipboard?" n && _gfb_copy "$result"
+    print
+    return 0
+  fi
+
+  # Tanpa -a/-c: tawarkan commit (y = commit, e = edit dulu, n = tidak)
+  if [[ -z "$commit_mode" ]]; then
+    local ans
+    print
+    read "ans?  ${M}?${N} ${B}Commit sekarang?${N} ${D}[y = commit$([[ "$source_label" != staged ]] && print ' (git add -A)') / e = edit dulu / N]${N} "
+    case $ans in
+      [yY]*) commit_mode=$([[ "$source_label" == staged ]] && print staged || print all); yes=true ;;
+      [eE]*) commit_mode=$([[ "$source_label" == staged ]] && print staged || print all); yes=edit ;;
+      *)
+        _gfb_confirm "Copy ke clipboard?" n && _gfb_copy "$result"
+        print
+        return 0 ;;
+    esac
+  fi
+
+  _gfb_gfbcm_commit "$commit_mode" "$yes" "$result"
+}
+
+# _gfb_gfbcm_commit <all|staged> <true|false|edit> <message>
+_gfb_gfbcm_commit() {
+  local mode=$1 yes=$2 msg=$3
+  local B D N G R Y C M; _gfb_pal
+
+  if [[ "$yes" == false ]]; then
+    local ans
+    print
+    read "ans?  ${M}?${N} ${B}Commit dengan message ini?${N} ${D}[Y = commit / e = edit dulu / n = batal]${N} "
+    case $ans in
+      ''|[yY]*) yes=true ;;
+      [eE]*) yes=edit ;;
+      *)
+        _gfb_info "Batal commit$([[ "$mode" == all ]] && print ' — perubahan tetap di-stage (git restore --staged . untuk membatalkan)')."
+        _gfb_confirm "Copy message ke clipboard?" n && _gfb_copy "$msg"
+        print
+        return 0 ;;
+    esac
+  fi
+
+  if [[ "$mode" == all ]]; then
+    git -C "$(git rev-parse --show-toplevel)" add -A || return 1
+  fi
+
+  local tmp; tmp=$(mktemp -t gfbcm) || return 1
+  print -r -- "$msg" > "$tmp"
+  print
+  if [[ "$yes" == edit ]]; then
+    git commit -e -F "$tmp"
+  else
+    git commit -F "$tmp"
+  fi
+  local rc=$?
+  rm -f "$tmp"
+
+  if (( rc == 0 )); then
+    _gfb_ok "Commit dibuat: ${B}$(git log -1 --pretty=format:'%h %s')${N}"
+  else
+    _gfb_err "git commit gagal (exit $rc) — message: ${D}$(print -r -- "$msg" | head -1)${N}"
   fi
   print
+  return $rc
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -1700,7 +1795,7 @@ gfbstatus() {
       local -a sl=(${(f)staged_ns})
       _gfb_sec "${G}Staged${N}" "${#sl} file · $(_gfb_status_sum "$staged_num") · akan masuk commit"
       _gfb_status_files $limit "$staged_ns" "$staged_num" "$partial"
-      hints+=("Ada yang di-stage → gfbcm untuk generate commit message")
+      hints+=("Ada yang di-stage → gfbcm -c untuk generate message & commit")
     else
       _gfb_sec "${D}Staged${N}" "kosong"
     fi
@@ -2431,7 +2526,7 @@ gfbmain() {
   _gfb_opt "gfbconflict"  "cek conflict antar branch tanpa merge"
 
   _gfb_sec "AI & tools"
-  _gfb_opt "gfbcm"        "generate commit message"
+  _gfb_opt "gfbcm"        "generate commit message (-a/-c langsung commit)"
   _gfb_opt "gfbpr"        "generate judul & deskripsi PR"
   _gfb_opt "gfblarklink"  "link Lark (Story & Issue) dari nama branch"
 
