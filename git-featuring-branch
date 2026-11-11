@@ -2084,6 +2084,247 @@ Branch name: $branch_name"
 }
 
 # ════════════════════════════════════════════════════════════════════
+# gfblarkbranch — kebalikan gfblarklink: dari link/ID Lark → branch terkait
+# Cari branch (lokal + origin) yang namanya memuat ID ticket. Di dalam
+# workspace multi-repo (.gfbwt-ws) semua repo ikut dicari.
+#   gfblarkbranch https://project.larksuite.com/spd/issue/detail/24947357
+#   gfblarkbranch 24947357
+#   gfblarkbranch -c 24947357   → + branch yang memuat commit ber-ID ini
+#   gfblarkbranch -r 24947357   → repo ini saja (abaikan workspace)
+#   gfblarkbranch -x 24947357   → tanpa fetch (offline / lebih cepat)
+# ════════════════════════════════════════════════════════════════════
+_gfblarkbranch_usage() {
+  _gfb_head "gfblarkbranch" "branch terkait dari link/ID Lark"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Kebalikan gfblarklink: tempel link ticket Lark (Story/Issue) atau ID-nya,"
+  _gfb_text "lalu tampil branch yang namanya memuat ID itu — lokal & origin, worktree,"
+  _gfb_text "dan apakah sudah merged ke base. Di workspace multi-repo, semua repo dicari."
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfblarkbranch [-c] [-r] [-x] <link-lark | id>"
+  _gfb_sec "Argumen"
+  _gfb_opt "<link-lark | id>" "link .../story|issue/detail/<id>, atau ID angkanya"
+  _gfb_sec "Opsi"
+  _gfb_opt "-c, --commits" "+ branch yang memuat commit dengan ID di message-nya"
+  _gfb_opt "-r, --repo" "repo ini saja, walau di dalam workspace"
+  _gfb_opt "-x, --no-fetch" "tanpa fetch origin (lebih cepat, bisa kurang update)"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_note "flag pendek bisa digabung: -cx"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfblarkbranch https://project.larksuite.com/spd/issue/detail/24947357"
+  _gfb_ex "gfblarkbranch 24947357" "ID saja"
+  _gfb_ex "gfblarkbranch -c 24947357" "+ develop/master yang sudah memuat commit-nya"
+  _gfb_sec "Catatan"
+  _gfb_note "ID dicocokkan utuh: 2494735 tidak ikut cocok dengan 24947357."
+  _gfb_note "Base untuk status merged: kolom base di .gfbwt-ws, atau origin/HEAD."
+  print
+}
+
+gfblarkbranch() {
+  local LARK_STORY_BASE_URL="https://project.larksuite.com/spd/story/detail/"
+  local LARK_ISSUE_BASE_URL="https://project.larksuite.com/spd/issue/detail/"
+
+  local input="" only_repo=false do_fetch=true with_commits=false i c
+  local -a extra_args=()
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfblarkbranch_usage; return 0 ;;
+      --commits) with_commits=true ;;
+      --repo) only_repo=true ;;
+      --no-fetch) do_fetch=false ;;
+      --*) _gfb_bad gfblarkbranch "Flag tidak dikenal: $1"; return 1 ;;
+      -?*)
+        for (( i = 2; i <= ${#1}; i++ )); do
+          c=${1[i]}
+          case $c in
+            c) with_commits=true ;;
+            r) only_repo=true ;;
+            x) do_fetch=false ;;
+            h) _gfblarkbranch_usage; return 0 ;;
+            *) _gfb_bad gfblarkbranch "Flag tidak dikenal: -$c (dari $1)"; return 1 ;;
+          esac
+        done
+        ;;
+      *) if [ -z "$input" ]; then input="$1"; else extra_args+=("$1"); fi ;;
+    esac
+    shift
+  done
+  if (( ${#extra_args} )); then
+    _gfb_bad gfblarkbranch "Argumen berlebih: ${extra_args[*]}"
+    return 1
+  fi
+  if [ -z "$input" ]; then
+    _gfb_bad gfblarkbranch "Link Lark atau ID wajib diisi."
+    return 1
+  fi
+
+  local B D N G R Y C M; _gfb_pal
+
+  # ── Ambil ID (+ tipe kalau dari link) ──
+  local id="" kind=""
+  if [[ "$input" =~ '/(story|issue)/detail/([0-9]+)' ]]; then
+    kind=${match[1]} id=${match[2]}
+  elif [[ "$input" == <-> ]]; then
+    id=$input
+  else
+    id=$(print -r -- "$input" | grep -oE '[0-9]{5,}' | tail -1)
+  fi
+  if [ -z "$id" ]; then
+    _gfb_err "ID tidak ditemukan di '$input'."
+    _gfb_note "Contoh: ${LARK_ISSUE_BASE_URL}24947357 atau 24947357" >&2
+    return 1
+  fi
+
+  # ── Repo yang dicari: semua repo workspace, atau repo ini ──
+  local ws="" d
+  local -a ws_alias ws_repo ws_base dirs labels aliases bases
+  if ! $only_repo && ws=$(_gfbwt_ws_find); then
+    _gfbwt_ws_conf "$ws"
+    for (( i = 1; i <= ${#ws_repo}; i++ )); do
+      d="$ws/${ws_repo[i]}"
+      git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
+      dirs+=("$d") labels+=("${ws_repo[i]}") aliases+=("${ws_alias[i]}") bases+=("${ws_base[i]}")
+    done
+  fi
+  if (( ${#dirs} == 0 )); then
+    ws=""
+    _gfb_repo || { _gfb_note "Atau jalankan dari dalam workspace multi-repo (.gfbwt-ws)." >&2; return 1; }
+    d=$(git rev-parse --show-toplevel)
+    dirs=("$d") labels=("${d:t}") aliases=("") bases=("")
+  fi
+
+  _gfb_head "gfblarkbranch" "branch terkait ticket Lark"
+  _gfb_kv "ID" "${B}$id${N}${kind:+  ${D}($kind)${N}}"
+  case $kind in
+    story) _gfb_kv "link" "${C}${LARK_STORY_BASE_URL}$id${N}" ;;
+    issue) _gfb_kv "link" "${C}${LARK_ISSUE_BASE_URL}$id${N}" ;;
+  esac
+  if [ -n "$ws" ]; then
+    _gfb_kv "cari di" "${#dirs} repo workspace ${D}(${ws/#$HOME/~})${N}"
+  else
+    _gfb_kv "cari di" "${labels[1]}"
+  fi
+
+  # ── Fetch semua repo paralel ──
+  if $do_fetch; then
+    setopt localoptions nomonitor nonotify
+    print
+    _gfb_step "Fetch origin${ws:+ (${#dirs} repo)}"
+    for d in "${dirs[@]}"; do git -C "$d" fetch -q --prune origin >/dev/null 2>&1 & done
+    wait
+    _gfb_unwait
+  fi
+
+  # ── Cari per repo ──
+  local -a picks=() hit_aliases=()
+  local total=0 r ref name base_ref loc wt_note merged_note when
+  local -a wt_path wt_branch wt_head wt_flag order via_commit
+  local -A has_local has_remote seen
+  local sha
+  for (( r = 1; r <= ${#dirs}; r++ )); do
+    d=${dirs[r]}
+    has_local=() has_remote=() order=() via_commit=() seen=()
+
+    # Urut dari commit terbaru; ID harus utuh (tidak diapit angka lain)
+    for ref in ${(f)"$(git -C "$d" for-each-ref --sort=-committerdate --format='%(refname)' refs/heads refs/remotes/origin)"}; do
+      case $ref in
+        refs/heads/*) name=${ref#refs/heads/} ;;
+        refs/remotes/origin/HEAD) continue ;;
+        *) name=${ref#refs/remotes/origin/} ;;
+      esac
+      [[ "$name" =~ "(^|[^0-9])${id}([^0-9]|\$)" ]] || continue
+      (( ${+has_local[$name]} || ${+has_remote[$name]} )) || order+=("$name")
+      if [[ $ref == refs/heads/* ]]; then has_local[$name]=1; else has_remote[$name]=1; fi
+    done
+
+    # -c: branch lain yang memuat commit dengan ID di message
+    if $with_commits; then
+      for name in "${order[@]}"; do seen[$name]=1; done
+      for sha in ${(f)"$(git -C "$d" log --all --fixed-strings --grep="$id" --format=%H -n 30 2>/dev/null)"}; do
+        for ref in ${(f)"$(git -C "$d" for-each-ref --contains "$sha" --format='%(refname)' refs/heads refs/remotes/origin)"}; do
+          case $ref in
+            refs/heads/*) name=${ref#refs/heads/} ;;
+            refs/remotes/origin/HEAD) continue ;;
+            *) name=${ref#refs/remotes/origin/} ;;
+          esac
+          (( ${+seen[$name]} )) && continue
+          seen[$name]=1
+          via_commit+=("$name")
+        done
+      done
+    fi
+
+    (( ${#order} + ${#via_commit} )) || continue
+
+    # Base untuk status merged: kolom .gfbwt-ws → origin/HEAD
+    base_ref=""
+    if [ -n "${bases[r]}" ] && git -C "$d" rev-parse -q --verify "origin/${bases[r]}" >/dev/null; then
+      base_ref="origin/${bases[r]}"
+    else
+      base_ref=$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)
+    fi
+    _gfbwt_load "$d"
+
+    _gfb_sec "${labels[r]}" "${aliases[r]:+${aliases[r]} · }${#order} branch${base_ref:+ · base $base_ref}"
+    [ -n "${aliases[r]}" ] && hit_aliases+=("${aliases[r]}")
+
+    for name in "${order[@]}"; do
+      ref=$name
+      (( ${+has_local[$name]} )) || ref="origin/$name"
+      if (( ${+has_local[$name]} && ${+has_remote[$name]} )); then loc="lokal + origin"
+      elif (( ${+has_local[$name]} )); then loc="${Y}lokal saja${N}"
+      else loc="origin saja"; fi
+      when=$(git -C "$d" log -1 --format=%cr "$ref" 2>/dev/null)
+      merged_note=""
+      if [ -n "$base_ref" ] && git -C "$d" merge-base --is-ancestor "$ref" "$base_ref" 2>/dev/null; then
+        merged_note="  ${G}✔ merged ke ${base_ref#origin/}${N}"
+      fi
+      wt_note=""
+      i=${wt_branch[(Ie)$name]}
+      (( i > 1 )) && wt_note="  ${C}⎇ ${wt_path[i]/#$HOME/~}${N}"
+      (( i == 1 )) && wt_note="  ${C}⎇ repo utama${N}"
+      (( total++ ))
+      picks+=("$name")
+      _gfb_item $total "${B}$name${N}  ${D}· $loc · $when${N}$merged_note$wt_note"
+    done
+
+    if (( ${#via_commit} )); then
+      _gfb_note "memuat commit ticket ini: ${(j:, :)via_commit}"
+    fi
+  done
+
+  if (( total == 0 )); then
+    print
+    _gfb_warn "Tidak ada branch dengan ID $id di namanya."
+    $with_commits || _gfb_hint "gfblarkbranch -c $id" "cari juga dari message commit"
+    print
+    return 1
+  fi
+
+  _gfb_sec "Langkah berikut"
+  if [ -n "$ws" ] && (( ${#hit_aliases} )); then
+    _gfb_hint "gfbwt ws add <branch> ${hit_aliases[*]}" "buka di workspace"
+  else
+    _gfb_hint "gfbwt add <branch>" "buka sebagai worktree"
+  fi
+  _gfb_hint "git switch <branch>" "atau checkout biasa"
+
+  local pick
+  _gfb_ask pick "Copy nama branch ke clipboard?" "(nomor, Enter = lewati)"
+  if [[ "$pick" == <-> ]] && (( pick >= 1 && pick <= total )); then
+    _gfb_copy "${picks[pick]}"
+  elif [ -n "$pick" ]; then
+    _gfb_warn "Nomor tidak valid: $pick"
+  fi
+  print
+}
+_gfblarkbranch() {
+  _arguments -s \
+    '-c[+ branch dari message commit]' '-r[repo ini saja]' '-x[tanpa fetch]' '-h[bantuan]' \
+    '1:link Lark atau ID:'
+}
+(( $+functions[compdef] )) && compdef _gfblarkbranch gfblarkbranch
+
+# ════════════════════════════════════════════════════════════════════
 # gfbconflict — cek conflict antar branch tanpa benar-benar merge
 #   gfbconflict master kiki/feat/SP-829 kiki/feat/SP-927
 # ════════════════════════════════════════════════════════════════════
@@ -4536,6 +4777,7 @@ gfbmain() {
   _gfb_opt "gfbcm"        "generate commit message (-a/-c langsung commit)"
   _gfb_opt "gfbpr"        "generate judul & deskripsi PR"
   _gfb_opt "gfblarklink"  "link Lark (Story & Issue) dari nama branch"
+  _gfb_opt "gfblarkbranch" "branch terkait dari link/ID Lark (semua repo workspace)"
 
   _gfb_sec "Konvensi"
   _gfb_opt "@"            "nama branch aktif (\".\" cara lama juga masih jalan)"

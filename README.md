@@ -114,6 +114,20 @@ gfbrenew -n           # dry-run, lihat rencana saja
 - Base diambil dari `origin/<base>` tanpa checkout, jadi aman dipakai di worktree. Upstream branch dipertahankan.
 - Kalau conflict: proses berhenti, backup tetap aman, dan ditampilkan perintah untuk batal & kembali seperti semula.
 
+**`gfblarkbranch`** — kebalikan `gfblarklink`: dari link/ID ticket Lark → branch terkait
+
+```bash
+gfblarkbranch https://project.larksuite.com/spd/issue/detail/24947357
+gfblarkbranch 24805879       # ID saja
+gfblarkbranch -c 24805879    # + branch yang memuat commit ber-ID ini (mis. develop / sprint)
+gfblarkbranch -r 24805879    # repo ini saja, walau di dalam workspace
+gfblarkbranch -x 24805879    # tanpa fetch origin
+```
+
+- Menampilkan branch yang namanya memuat ID (dicocokkan utuh), lokal/origin, kapan terakhir commit,
+  status merged ke base, dan worktree kalau sedang terbuka. Bisa copy nama branch ke clipboard.
+- Di dalam workspace multi-repo (`.gfbwt-ws`), semua repo dicari sekaligus (fetch paralel).
+
 **`gfbwt`** — kelola git worktree: 1 branch = 1 folder, kerjakan beberapa branch sekaligus tanpa stash/checkout
 
 ```bash
