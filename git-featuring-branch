@@ -2397,6 +2397,9 @@ _gfbrenew_usage() {
   _gfb_note "            di branch aktif tidak tersentuh. Kalau akan conflict, dibatalkan"
   _gfb_note "            sebelum ada yang berubah."
   _gfb_note "worktree  → branch yang terbuka di worktree lain: jalankan dari worktree itu"
+  _gfb_sec "Dibatalkan otomatis kalau"
+  _gfb_note "tidak ada commit baru dari base, ada uncommitted changes (branch aktif),"
+  _gfb_note "branch lokal tertinggal dari origin, atau branch lain yang akan conflict."
   _gfb_sec "Nama backup"
   _gfb_note "<branch>-old-YYYYMMDD; kalau sudah ada → -2, -3, ... (hanya lokal, tidak di-push)"
   _gfb_sec "Contoh"
@@ -2533,6 +2536,14 @@ gfbrenew() {
     return 1
   fi
   ahead_base=$(git rev-list --count "$branch..$base_ref")
+  # Tidak ada commit baru dari base → tidak ada yang perlu diperbarui
+  if (( ahead_base == 0 )); then
+    print
+    _gfb_ok "${B}$branch${N} sudah memuat semua commit $base_ref."
+    _gfb_note "Tidak ada commit baru dari $base — dibatalkan, tidak ada yang diubah."
+    print
+    return 0
+  fi
 
   # ── Nama backup: <branch>-old-YYYYMMDD[-N] ──
   local stamp=$(date +%Y%m%d) old_name n=1
@@ -2580,11 +2591,6 @@ gfbrenew() {
   _gfb_item 3 "buat ulang $branch dari $base_ref"
   _gfb_item 4 "merge $old_name → $branch"
   $push_to_origin && _gfb_item 5 "push $branch ke origin"
-
-  if (( ahead_base == 0 )); then
-    print
-    _gfb_info "$branch sudah memuat semua commit $base_ref — renew tidak wajib."
-  fi
 
   # Branch lain + akan conflict → tidak bisa diselesaikan tanpa checkout
   if ! $is_current && ! $merge_ok; then
