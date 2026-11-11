@@ -97,6 +97,21 @@ Ketik `gfbmain` untuk daftar semua perintah, atau `gfbmain help <cmd>` / `<cmd> 
 
 ![gfbcompare](screenshots/gfbcompare.png)
 
+**`gfbrenew`** — perbarui branch aktif dengan master terbaru, tanpa risiko kehilangan kerjaan
+
+```bash
+gfbrenew              # split-payment → backup split-payment-old-20261111, buat ulang dari origin/master, merge backup
+gfbrenew -b develop   # pakai develop sebagai base
+gfbrenew -dp          # hapus backup di akhir tanpa tanya + push (fast-forward, tanpa force)
+gfbrenew -k           # simpan backup tanpa tanya
+gfbrenew -n           # dry-run, lihat rencana saja
+```
+
+- Nama backup `<branch>-old-YYYYMMDD`; kalau tanggal sama sudah ada → `-2`, `-3`, dst. Backup hanya lokal.
+- Backup dihapus paling akhir: tanpa `-d`/`-k` ditanya dulu (default: tidak dihapus).
+- Base diambil dari `origin/<base>` tanpa checkout, jadi aman dipakai di worktree. Upstream branch dipertahankan.
+- Kalau conflict: proses berhenti, backup tetap aman, dan ditampilkan perintah untuk batal & kembali seperti semula.
+
 **`gfbwt`** — kelola git worktree: 1 branch = 1 folder, kerjakan beberapa branch sekaligus tanpa stash/checkout
 
 ```bash
