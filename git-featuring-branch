@@ -2361,42 +2361,51 @@ _gfbdel_execute() {
 }
 
 # ════════════════════════════════════════════════════════════════════
-# gfbrenew — perbarui branch aktif dengan base terbaru (default master)
-# Branch aktif di-backup jadi <branch>-old-<YYYYMMDD>[-N], dibuat ulang dari
+# gfbrenew — perbarui branch dengan base terbaru (default master)
+# Branch di-backup jadi <branch>-old-<YYYYMMDD>[-N], dibuat ulang dari
 # origin/<base>, lalu backup di-merge ke branch baru. Backup dihapus paling
 # akhir (opsional), jadi kalau ada masalah tidak ada pekerjaan yang hilang.
-#   gfbrenew                 → base master, tanya hapus backup di akhir
+#   gfbrenew                 → branch aktif, base master, tanya hapus backup
+#   gfbrenew kiki/feat/SP-1  → branch lain, tanpa checkout (merge di memori)
 #   gfbrenew -b develop      → base develop
-#   gfbrenew -d              → hapus backup tanpa tanya
-#   gfbrenew -k              → simpan backup tanpa tanya
+#   gfbrenew -d / -k         → hapus / simpan backup tanpa tanya
 #   gfbrenew -p              → push branch baru (fast-forward, tanpa force)
-#   gfbrenew -n              → dry-run
+#   gfbrenew -n              → dry-run (sekalian prediksi conflict)
 # ════════════════════════════════════════════════════════════════════
 _gfbrenew_usage() {
-  _gfb_head "gfbrenew" "perbarui branch aktif dengan base terbaru"
+  _gfb_head "gfbrenew" "perbarui branch dengan base terbaru"
   _gfb_sec "Untuk apa"
-  _gfb_text "Branch aktif di-backup jadi <branch>-old-<tanggal>, dibuat ulang dari"
+  _gfb_text "Branch di-backup jadi <branch>-old-<tanggal>, dibuat ulang dari"
   _gfb_text "origin/<base> terbaru dengan nama yang sama, lalu backup di-merge ke sana."
   _gfb_text "Backup baru dihapus paling akhir (opsional) supaya tidak ada kerjaan hilang."
   _gfb_sec "Pemakaian"
-  _gfb_use "gfbrenew [-b base] [-d | -k] [-p] [-y] [-n]"
+  _gfb_use "gfbrenew [-b base] [-d | -k] [-p] [-y] [-n] [branch]"
+  _gfb_sec "Argumen"
+  _gfb_opt "[branch]" "branch yang diperbarui; kosong / @ = branch aktif"
   _gfb_sec "Opsi"
   _gfb_opt "-b, --base <base>" "base branch (default: master)"
   _gfb_opt "-d, --delete-old" "hapus backup di akhir tanpa tanya"
   _gfb_opt "-k, --keep-old" "simpan backup tanpa tanya"
   _gfb_opt "-p, --push" "push branch baru ke origin (fast-forward, tanpa force)"
   _gfb_opt "-y, --yes" "tanpa konfirmasi awal"
-  _gfb_opt "-n, --dry-run" "hanya tampilkan rencana"
+  _gfb_opt "-n, --dry-run" "hanya tampilkan rencana + prediksi conflict"
   _gfb_opt "-h, --help" "bantuan ini"
   _gfb_note "flag pendek bisa digabung: -dp, -kpy"
+  _gfb_sec "Branch aktif vs branch lain"
+  _gfb_note "aktif     → checkout + merge biasa; conflict bisa diselesaikan di tempat"
+  _gfb_note "lain      → tanpa checkout, merge di memori; kerjaan & uncommitted changes"
+  _gfb_note "            di branch aktif tidak tersentuh. Kalau akan conflict, dibatalkan"
+  _gfb_note "            sebelum ada yang berubah."
+  _gfb_note "worktree  → branch yang terbuka di worktree lain: jalankan dari worktree itu"
   _gfb_sec "Nama backup"
   _gfb_note "<branch>-old-YYYYMMDD; kalau sudah ada → -2, -3, ... (hanya lokal, tidak di-push)"
   _gfb_sec "Contoh"
   _gfb_ex "gfbrenew" "split-payment → split-payment-old-20261111"
-  _gfb_ex "gfbrenew -b develop" "pakai develop sebagai base"
+  _gfb_ex "gfbrenew kiki/feat/SP-829" "branch lain, tanpa pindah branch"
+  _gfb_ex "gfbrenew -b develop @" "branch aktif, base develop"
   _gfb_ex "gfbrenew -dp" "hapus backup + push"
-  _gfb_ex "gfbrenew -n" "lihat rencana saja"
-  _gfb_sec "Kalau conflict"
+  _gfb_ex "gfbrenew -n kiki/feat/SP-829" "rencana + prediksi conflict"
+  _gfb_sec "Kalau conflict (branch aktif)"
   _gfb_note "Proses berhenti di tengah merge; backup tetap aman. Selesaikan lalu commit,"
   _gfb_note "atau batalkan & kembalikan seperti semula dengan perintah yang ditampilkan."
   print
@@ -2404,7 +2413,8 @@ _gfbrenew_usage() {
 
 gfbrenew() {
   local base="master" delete_old="" push_to_origin=false assume_yes=false dry_run=false
-  local i c
+  local branch="" i c
+  local -a extra_args=()
 
   while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -2432,31 +2442,57 @@ gfbrenew() {
           esac
         done
         ;;
-      *) _gfb_bad gfbrenew "Argumen tidak dikenal: $1 (gfbrenew selalu memakai branch aktif)"; return 1 ;;
+      *) if [ -z "$branch" ]; then branch="$1"; else extra_args+=("$1"); fi ;;
     esac
     shift
   done
+  if (( ${#extra_args} )); then
+    _gfb_bad gfbrenew "Argumen berlebih: ${extra_args[*]} (hanya 1 branch)"
+    return 1
+  fi
   _gfb_repo || return 1
 
   local B D N G R Y C M; _gfb_pal
-  local branch=$(_gfb_cur)
+  local current=$(_gfb_cur)
+  [ -z "$branch" ] && branch="@"
+  branch=$(_gfb_ref "$branch")
   base=$(_gfb_ref "$base")
+  local is_current=false
+  [ "$branch" = "$current" ] && is_current=true
 
   if [ "$branch" = "HEAD" ]; then
-    _gfb_err "Sedang detached HEAD, tidak ada branch yang bisa diperbarui."
+    _gfb_err "Sedang detached HEAD. Sebut nama branch-nya: gfbrenew <branch>"
     return 1
   fi
   if [[ "$branch" =~ $GFB_PROTECTED || "$branch" = "$base" ]]; then
     _gfb_err "Branch '$branch' adalah branch utama/base, tidak bisa di-renew."
     return 1
   fi
-  if [ -n "$(git ls-files -u)" ] || git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-    _gfb_err "Masih ada merge yang belum selesai. Selesaikan atau git merge --abort dulu."
+  if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+    _gfb_err "Branch lokal '$branch' tidak ditemukan."
+    git show-ref --verify --quiet "refs/remotes/origin/$branch" \
+      && _gfb_hint "git branch $branch origin/$branch" "ambil dulu dari origin"
     return 1
   fi
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    _gfb_err "Ada uncommitted changes di '$branch'. Commit atau stash dulu."
-    return 1
+
+  if $is_current; then
+    if [ -n "$(git ls-files -u)" ] || git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+      _gfb_err "Masih ada merge yang belum selesai. Selesaikan atau git merge --abort dulu."
+      return 1
+    fi
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      _gfb_err "Ada uncommitted changes di '$branch'. Commit atau stash dulu."
+      return 1
+    fi
+  else
+    # Branch yang terbuka di worktree lain tidak boleh digeser dari sini
+    local wt_at
+    if wt_at=$(_gfbwt_path_of "$branch"); then
+      _gfb_err "Branch '$branch' sedang terbuka di worktree:"
+      _gfb_note "${wt_at/#$HOME/~}" >&2
+      _gfb_hint "cd ${(q)wt_at} && gfbrenew" "jalankan dari worktree itu"
+      return 1
+    fi
   fi
 
   # ── Ambil base terbaru (tanpa checkout base, jadi aman di worktree) ──
@@ -2488,8 +2524,12 @@ gfbrenew() {
     behind=$(git rev-list --count "$branch..origin/$branch")
   fi
   if (( behind > 0 )); then
-    _gfb_err "Branch lokal tertinggal $behind commit dari origin/$branch."
-    _gfb_hint "git pull origin $branch" "pull dulu supaya commit di origin ikut ter-backup"
+    _gfb_err "Branch lokal '$branch' tertinggal $behind commit dari origin/$branch."
+    if $is_current; then
+      _gfb_hint "git pull origin $branch" "pull dulu supaya commit di origin ikut ter-backup"
+    else
+      _gfb_hint "git fetch origin $branch:$branch" "update dulu (tanpa checkout)"
+    fi
     return 1
   fi
   ahead_base=$(git rev-list --count "$branch..$base_ref")
@@ -2503,6 +2543,14 @@ gfbrenew() {
     old_name="$branch-old-$stamp-$n"
   done
 
+  # ── Prediksi merge di memori (tidak menyentuh working tree) ──
+  local -a conflict_files=()
+  local merge_ok=true mt_out
+  if ! mt_out=$(git merge-tree --write-tree --name-only --no-messages "$base_ref" "$branch" 2>/dev/null); then
+    merge_ok=false
+    conflict_files=(${${(f)mt_out}[2,-1]})
+  fi
+
   # ── Rencana ──
   local del_desc
   case $delete_old in
@@ -2513,8 +2561,16 @@ gfbrenew() {
 
   _gfb_head "gfbrenew" "perbarui branch dengan $base terbaru"
   _gfb_kv "branch" "${B}$branch${N}  ${D}· $(git log -1 --format='%h %s · %cr' "$branch")${N}"
+  $is_current || _gfb_kv "mode" "${D}branch lain — tanpa checkout, kamu tetap di $current${N}"
   _gfb_kv "base" "$base_ref  ${D}· $ahead_base commit baru belum ada di $branch${N}"
   _gfb_kv "backup" "${Y}$old_name${N}  ${D}(lokal)${N}"
+  if $merge_ok; then
+    _gfb_kv "conflict" "${G}tidak${N}"
+  else
+    _gfb_kv "conflict" "${R}ya · ${#conflict_files} file${N}"
+    local f
+    for f in "${conflict_files[@]}"; do _gfb_note "    └ $f"; done
+  fi
   _gfb_kv "push" "$($push_to_origin && echo "ya ${D}(fast-forward, tanpa force)${N}" || echo "${D}tidak — tambah -p untuk push${N}")"
   _gfb_kv "hapus" "$del_desc"
 
@@ -2528,6 +2584,17 @@ gfbrenew() {
   if (( ahead_base == 0 )); then
     print
     _gfb_info "$branch sudah memuat semua commit $base_ref — renew tidak wajib."
+  fi
+
+  # Branch lain + akan conflict → tidak bisa diselesaikan tanpa checkout
+  if ! $is_current && ! $merge_ok; then
+    print
+    _gfb_warn "Akan conflict. Untuk branch lain, conflict tidak bisa diselesaikan tanpa checkout."
+    _gfb_hint "git switch $branch && gfbrenew" "jalankan dari branch itu untuk resolve"
+    _gfb_note "Tidak ada yang diubah."
+    print
+    $dry_run && return 0
+    return 1
   fi
 
   if $dry_run; then
@@ -2549,41 +2616,71 @@ gfbrenew() {
   upstream_merge=$(git config --get "branch.$branch.merge")
 
   print
-  _gfb_step "Buat backup ${Y}$old_name${N}"
-  if ! git checkout -q -b "$old_name"; then
-    _gfb_err "Gagal membuat backup. Tidak ada yang berubah."
-    return 1
-  fi
+  if $is_current; then
+    _gfb_step "Buat backup ${Y}$old_name${N}"
+    if ! git checkout -q -b "$old_name"; then
+      _gfb_err "Gagal membuat backup. Tidak ada yang berubah."
+      return 1
+    fi
 
-  _gfb_step "Hapus branch lokal $branch"
-  if ! git branch -q -D "$branch"; then
-    _gfb_err "Gagal menghapus $branch. Kamu sekarang di backup $old_name."
-    _gfb_hint "git switch $branch && git branch -D $old_name" "kembali seperti semula"
-    return 1
-  fi
+    _gfb_step "Hapus branch lokal $branch"
+    if ! git branch -q -D "$branch"; then
+      _gfb_err "Gagal menghapus $branch. Kamu sekarang di backup $old_name."
+      _gfb_hint "git switch $branch && git branch -D $old_name" "kembali seperti semula"
+      return 1
+    fi
 
-  _gfb_step "Buat ulang $branch dari $base_ref"
-  if ! git checkout -q --no-track -b "$branch" "$base_ref"; then
-    _gfb_err "Gagal membuat ulang $branch. Kerjaan aman di $old_name."
-    _gfb_hint "git branch -m $old_name $branch" "kembalikan nama branch semula"
-    return 1
-  fi
-  if [[ -n "$upstream_remote" && -n "$upstream_merge" ]]; then
-    git config "branch.$branch.remote" "$upstream_remote"
-    git config "branch.$branch.merge" "$upstream_merge"
-  fi
+    _gfb_step "Buat ulang $branch dari $base_ref"
+    if ! git checkout -q --no-track -b "$branch" "$base_ref"; then
+      _gfb_err "Gagal membuat ulang $branch. Kerjaan aman di $old_name."
+      _gfb_hint "git branch -m $old_name $branch" "kembalikan nama branch semula"
+      return 1
+    fi
+    if [[ -n "$upstream_remote" && -n "$upstream_merge" ]]; then
+      git config "branch.$branch.remote" "$upstream_remote"
+      git config "branch.$branch.merge" "$upstream_merge"
+    fi
 
-  _gfb_step "Merge $old_name → $branch"
-  if ! git merge --no-edit "$old_name"; then
-    print
-    _gfb_warn "Ada conflict. Backup ${B}$old_name${N} tetap aman."
-    _gfb_note "Selesaikan conflict, git add, lalu git commit."
-    $push_to_origin && _gfb_hint "git push -u origin $branch" "push setelah selesai"
-    _gfb_hint "gfbdel -lo $old_name" "hapus backup kalau sudah yakin"
-    _gfb_sec "Batal & kembalikan seperti semula"
-    _gfb_use "git merge --abort && git switch $old_name && git branch -D $branch && git branch -m $branch"
-    print
-    return 1
+    _gfb_step "Merge $old_name → $branch"
+    if ! git merge --no-edit "$old_name"; then
+      print
+      _gfb_warn "Ada conflict. Backup ${B}$old_name${N} tetap aman."
+      _gfb_note "Selesaikan conflict, git add, lalu git commit."
+      $push_to_origin && _gfb_hint "git push -u origin $branch" "push setelah selesai"
+      _gfb_hint "gfbdel -lo $old_name" "hapus backup kalau sudah yakin"
+      _gfb_sec "Batal & kembalikan seperti semula"
+      _gfb_use "git merge --abort && git switch $old_name && git branch -D $branch && git branch -m $branch"
+      print
+      return 1
+    fi
+  else
+    # Tanpa checkout: merge di memori → commit → pindahkan ref branch
+    local tree new_commit
+    _gfb_step "Buat backup ${Y}$old_name${N}"
+    if ! git branch -q --no-track "$old_name" "$branch"; then
+      _gfb_err "Gagal membuat backup. Tidak ada yang berubah."
+      return 1
+    fi
+
+    _gfb_step "Hapus branch lokal $branch"
+    if ! git branch -q -D "$branch"; then
+      _gfb_err "Gagal menghapus $branch. Backup $old_name tetap ada."
+      return 1
+    fi
+
+    _gfb_step "Buat ulang $branch dari $base_ref + merge $old_name"
+    if ! tree=$(git merge-tree --write-tree --no-messages "$base_ref" "$old_name" 2>/dev/null) \
+       || ! new_commit=$(git commit-tree "${tree%%$'\n'*}" -p "$base_ref" -p "$old_name" \
+            -m "Merge branch '$old_name' into $branch") \
+       || ! git branch -q --no-track "$branch" "$new_commit"; then
+      _gfb_err "Gagal membuat ulang $branch. Kerjaan aman di $old_name."
+      _gfb_hint "git branch -m $old_name $branch" "kembalikan nama branch semula"
+      return 1
+    fi
+    if [[ -n "$upstream_remote" && -n "$upstream_merge" ]]; then
+      git config "branch.$branch.remote" "$upstream_remote"
+      git config "branch.$branch.merge" "$upstream_merge"
+    fi
   fi
 
   if $push_to_origin; then
@@ -2606,7 +2703,8 @@ gfbrenew() {
   if [ "$delete_old" = yes ]; then
     print
     _gfb_step "Hapus backup $old_name"
-    if git branch -q -d "$old_name"; then
+    # -D: backup pasti sudah ada di $branch (parent merge), -d bisa menolak kalau bukan HEAD
+    if git merge-base --is-ancestor "$old_name" "$branch" && git branch -q -D "$old_name"; then
       _gfb_ok "Backup ${Y}$old_name${N} dihapus."
     else
       _gfb_err "Gagal menghapus backup $old_name."
@@ -2622,7 +2720,8 @@ _gfbrenew() {
   _arguments -s \
     '(-b --base)'{-b,--base}'[base branch]:base branch:_gfb_branches' \
     '(-d -k)-d[hapus backup]' '(-d -k)-k[simpan backup]' \
-    '-p[push ke origin]' '-y[tanpa konfirmasi]' '-n[dry-run]' '-h[bantuan]'
+    '-p[push ke origin]' '-y[tanpa konfirmasi]' '-n[dry-run]' '-h[bantuan]' \
+    '1:branch (kosong/@ = aktif):_gfb_branches'
 }
 (( $+functions[compdef] )) && compdef _gfbrenew gfbrenew
 
@@ -4405,7 +4504,7 @@ gfbmain() {
   _gfb_opt "gfb"          "buat branch baru dari base (opsional merge + push)"
   _gfb_opt "gfbls"        "daftar branch, urut terakhir dipakai"
   _gfb_opt "gfbdel"       "hapus branch lokal + origin"
-  _gfb_opt "gfbrenew"     "perbarui branch aktif: buat ulang dari master + merge"
+  _gfb_opt "gfbrenew"     "perbarui branch dengan master terbaru (backup + merge)"
   _gfb_opt "gfbclean"     "hapus branch yang sudah merged"
   _gfb_opt "gfbcheck"     "branch yang belum merged"
 

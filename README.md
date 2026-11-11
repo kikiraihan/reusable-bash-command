@@ -102,6 +102,7 @@ Ketik `gfbmain` untuk daftar semua perintah, atau `gfbmain help <cmd>` / `<cmd> 
 ```bash
 gfbrenew              # split-payment → backup split-payment-old-20261111, buat ulang dari origin/master, merge backup
 gfbrenew -b develop   # pakai develop sebagai base
+gfbrenew kiki/feat/SP-829   # branch lain, tanpa checkout (merge di memori; dibatalkan kalau akan conflict)
 gfbrenew -dp          # hapus backup di akhir tanpa tanya + push (fast-forward, tanpa force)
 gfbrenew -k           # simpan backup tanpa tanya
 gfbrenew -n           # dry-run, lihat rencana saja
@@ -109,6 +110,7 @@ gfbrenew -n           # dry-run, lihat rencana saja
 
 - Nama backup `<branch>-old-YYYYMMDD`; kalau tanggal sama sudah ada → `-2`, `-3`, dst. Backup hanya lokal.
 - Backup dihapus paling akhir: tanpa `-d`/`-k` ditanya dulu (default: tidak dihapus).
+- Tanpa argumen / `@` / `.` = branch aktif. Branch lain diperbarui tanpa checkout, jadi uncommitted changes di branch aktif aman; branch yang terbuka di worktree lain harus dijalankan dari worktree itu.
 - Base diambil dari `origin/<base>` tanpa checkout, jadi aman dipakai di worktree. Upstream branch dipertahankan.
 - Kalau conflict: proses berhenti, backup tetap aman, dan ditampilkan perintah untuk batal & kembali seperti semula.
 
