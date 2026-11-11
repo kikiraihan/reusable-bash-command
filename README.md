@@ -97,6 +97,28 @@ Ketik `gfbmain` untuk daftar semua perintah, atau `gfbmain help <cmd>` / `<cmd> 
 
 ![gfbcompare](screenshots/gfbcompare.png)
 
+**`gfbwt`** — kelola git worktree: 1 branch = 1 folder, kerjakan beberapa branch sekaligus tanpa stash/checkout
+
+```bash
+gfbwt                                 # daftar worktree: status file, sinkron origin, commit terakhir
+gfbwt add kiki/feat/SP-900 develop    # worktree branch baru dari origin/develop, lalu cd ke sana
+gfbwt add kiki/feat/SP-829            # branch yang sudah ada (lokal/origin)
+gfbwt go 829                          # cd ke worktree yang cocok
+gfbwt main                            # kembali ke repo utama
+gfbwt rm -b @                         # hapus worktree ini + branch-nya (lokal + origin)
+gfbwt clean develop -b                # prune worktree hilang + hapus yang sudah merged
+gfb -pw develop kiki/feat/SP-901      # gfb versi worktree: repo utama tidak di-checkout
+```
+
+- Lokasi: `../<repo>.wt/<branch-slug>` (ubah dengan `GFB_WT_DIR`).
+- Setelah `add`: `.env*` yang di-gitignore di-copy dari repo utama, `vendor/` & `node_modules/`
+  di-clone dengan APFS copy-on-write (`-i` untuk `composer install`/`npm ci`, `-x` tanpa deps),
+  lalu `.gfbwt-setup` dijalankan kalau ada.
+- `vendor/` sengaja tidak di-symlink: `__DIR__` PHP mengikuti symlink, sehingga autoload Composer
+  akan memuat kode dari repo utama, bukan dari worktree.
+- Terintegrasi: `gfbls` menandai branch di worktree lain dengan `⎇`, `gfbdel`/`gfbclean` tidak
+  mencoba menghapus branch yang masih terbuka di worktree.
+
 > Screenshot diambil dari repo demo (`api-gateway`, `web-dashboard`, `mobile-app`) dengan data commit contoh.
 
 ---

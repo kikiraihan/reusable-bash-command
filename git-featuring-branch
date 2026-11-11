@@ -231,6 +231,7 @@ print('\n'.join(lines).strip())
 #   gfb -pm dev_sprint_9a dev-cfl-13/@   → @ = branch aktif, lalu branch aktif di-merge
 #   gfb -pmy dev_sprint_9a dev-cfl-13/@  → sama, tanpa konfirmasi
 #   gfb -n dev_sprint_9a dev-cfl-13/@    → dry-run, hanya tampilkan rencana
+#   gfb -pw develop kiki/feat/SP-901     → dibuat sebagai worktree (lihat gfbwt)
 # Kalau branch tujuan sudah ada (lokal/origin) → ditawarkan replace:
 # hapus branch lama lalu buat ulang. Cara lama ("." dan --merge) masih jalan.
 # ════════════════════════════════════════════════════════════════════
@@ -241,13 +242,14 @@ _gfb_usage() {
   _gfb_text "Bisa sekaligus merge branch aktif ke branch baru (mis. branch fix-conflict"
   _gfb_text "per sprint) dan push ke origin. Kalau branch sudah ada, ditawarkan replace."
   _gfb_sec "Pemakaian"
-  _gfb_use "gfb [-p] [-m] [-y] [-n] <base-branch> <nama-branch-baru>"
+  _gfb_use "gfb [-p] [-m] [-w] [-y] [-n] <base-branch> <nama-branch-baru>"
   _gfb_sec "Argumen"
   _gfb_opt "<base-branch>" "branch asal, di-pull dulu dari origin (@ = branch aktif)"
   _gfb_opt "<nama-branch-baru>" "nama branch baru; prefix/@ → prefix/<branch-aktif>"
   _gfb_sec "Opsi"
   _gfb_opt "-p" "push ke origin + set upstream"
   _gfb_opt "-m" "merge branch aktif ke branch baru (wajib pakai @ di nama)"
+  _gfb_opt "-w" "buat sebagai worktree; repo utama tidak di-checkout (gfbwt)"
   _gfb_opt "-y" "tanpa konfirmasi (replace tetap ditanya)"
   _gfb_opt "-n" "dry-run, hanya tampilkan rencana"
   _gfb_opt "-h" "bantuan ini"
@@ -259,13 +261,14 @@ _gfb_usage() {
   _gfb_ex "gfb -p develop fitur-api" "buat + push"
   _gfb_ex "gfb -pm dev_sprint_9a dev-cfl-13/@" "dev-cfl-13/<aktif> + merge branch aktif"
   _gfb_ex "gfb -n dev_sprint_9a dev-cfl-13/@" "lihat rencana saja"
+  _gfb_ex "gfb -pw develop kiki/feat/SP-901" "buat + push, langsung di worktree"
   _gfb_sec "Branch sudah ada?"
   _gfb_note "Ditawarkan replace: hapus branch lama (lokal + origin) lalu buat ulang."
   print
 }
 
 gfb() {
-  local push_to_origin=false auto_merge=false assume_yes=false dry_run=false
+  local push_to_origin=false auto_merge=false assume_yes=false dry_run=false as_worktree=false
   local base_branch="" branch_name=""
   local -a legacy_hints=() extra_args=()
   local i c
@@ -278,6 +281,7 @@ gfb() {
       --merge) auto_merge=true; legacy_hints+=("--merge → -m (bisa digabung: -pm)") ;;
       --yes) assume_yes=true ;;
       --dry-run) dry_run=true ;;
+      --worktree) as_worktree=true ;;
       --*) _gfb_bad gfb "Flag tidak dikenal: $1"; return 1 ;;
       -?*)
         # flag pendek, bisa digabung (mis. -pmy)
@@ -288,6 +292,7 @@ gfb() {
             m) auto_merge=true ;;
             y) assume_yes=true ;;
             n) dry_run=true ;;
+            w) as_worktree=true ;;
             h) _gfb_usage; return 0 ;;
             *) _gfb_bad gfb "Flag tidak dikenal: -$c (dari $1)"; return 1 ;;
           esac
@@ -347,6 +352,7 @@ gfb() {
     local new_cmd="gfb -" h
     [ "$push_to_origin" = true ] && new_cmd+="p"
     [ "$auto_merge" = true ] && new_cmd+="m"
+    [ "$as_worktree" = true ] && new_cmd+="w"
     [ "$assume_yes" = true ] && new_cmd+="y"
     [ "$dry_run" = true ] && new_cmd+="n"
     [ "$new_cmd" = "gfb -" ] && new_cmd="gfb"
@@ -379,9 +385,24 @@ gfb() {
       _gfb_err "Branch '$branch_name' sudah ada dan sedang dipakai (aktif/base), tidak bisa di-replace."
       return 1
     fi
+    local wt_at
+    if wt_at=$(_gfbwt_path_of "$branch_name"); then
+      _gfb_err "Branch '$branch_name' sudah ada dan sedang dipakai di worktree:"
+      _gfb_note "${wt_at/#$HOME/~}" >&2
+      _gfb_hint "gfbwt rm -b $branch_name" "hapus worktree + branch dulu kalau mau replace"
+      return 1
+    fi
     [ "$exists_local" = true ] && existing_where="lokal"
     [ "$exists_remote" = true ] && existing_where="${existing_where:+$existing_where + }origin"
     replace_existing=true
+  fi
+  local wt_target=""
+  if [ "$as_worktree" = true ]; then
+    wt_target="$(_gfbwt_root)/$(_gfbwt_slug "$branch_name")"
+    if [ -e "$wt_target" ]; then
+      _gfb_err "Folder worktree sudah ada: ${wt_target/#$HOME/~}"
+      return 1
+    fi
   fi
 
   # ── Rencana ──
@@ -399,6 +420,10 @@ gfb() {
   _gfb_kv "branch" "${B}$branch_name${N}"
   _gfb_kv "merge" "$merge_desc"
   _gfb_kv "push" "$([ "$push_to_origin" = true ] && echo "ya" || echo "${D}tidak — tambah -p untuk push${N}")"
+  if [ "$as_worktree" = true ]; then
+    _gfb_kv "worktree" "${wt_target/#$HOME/~}"
+    _gfb_note "repo utama tetap di $current_branch; base diambil dari origin/$base_branch"
+  fi
 
   if [ "$replace_existing" = true ]; then
     print
@@ -414,9 +439,11 @@ gfb() {
     return 0
   fi
 
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  # Mode worktree tidak checkout di repo utama, jadi uncommitted changes tidak masalah
+  if [[ "$as_worktree" != true ]] && { ! git diff --quiet || ! git diff --cached --quiet; }; then
     print
     _gfb_err "Ada uncommitted changes di '$current_branch'. Commit atau stash dulu."
+    _gfb_hint "gfb -w $base_branch $branch_name" "atau buat sebagai worktree, tanpa stash"
     return 1
   fi
 
@@ -435,10 +462,12 @@ gfb() {
   fi
 
   print
-  _gfb_step "Pull $base_branch"
-  if ! { git checkout -q "$base_branch" && git pull -q origin "$base_branch"; }; then
-    _gfb_err "Gagal update $base_branch."
-    return 1
+  if [ "$as_worktree" != true ]; then
+    _gfb_step "Pull $base_branch"
+    if ! { git checkout -q "$base_branch" && git pull -q origin "$base_branch"; }; then
+      _gfb_err "Gagal update $base_branch."
+      return 1
+    fi
   fi
 
   if [ "$replace_existing" = true ]; then
@@ -456,6 +485,11 @@ gfb() {
         return 1
       fi
     fi
+  fi
+
+  if [ "$as_worktree" = true ]; then
+    _gfbwt_from_gfb "$base_branch" "$branch_name" "$current_branch" "$auto_merge" "$push_to_origin"
+    return
   fi
 
   _gfb_step "Buat branch $branch_name"
@@ -500,7 +534,7 @@ _gfb_branches() {
 }
 _gfb() {
   _arguments -s \
-    '-p[push ke origin]' '-m[merge branch aktif]' '-y[tanpa konfirmasi]' \
+    '-p[push ke origin]' '-m[merge branch aktif]' '-w[buat sebagai worktree]' '-y[tanpa konfirmasi]' \
     '-n[dry-run]' '-h[bantuan]' \
     '1:base branch:_gfb_branches' \
     '2:nama branch baru:'
@@ -574,6 +608,19 @@ gfbclean() {
     | grep -vE "$GFB_PROTECTED" \
     | grep -vxF -e "$base_branch" -e "$original_branch")
   [ -n "$filter" ] && branches=$(print -r -- "$branches" | grep -- "$filter")
+
+  # Branch yang masih terbuka di worktree tidak bisa dihapus → dilewati
+  local -a wt_path wt_branch wt_head wt_flag; _gfbwt_load
+  local wt_brs=${(F)${wt_branch:#}} wt_skipped=""
+  if [[ -n "$wt_brs" && -n "$branches" ]]; then
+    wt_skipped=$(print -r -- "$branches" | grep -xF -- "$wt_brs")
+    branches=$(print -r -- "$branches" | grep -vxF -- "$wt_brs")
+  fi
+  if [ -n "$wt_skipped" ]; then
+    local -a wt_sk=(${(f)wt_skipped})
+    _gfb_info "${#wt_sk} branch merged dilewati karena masih terbuka di worktree."
+    _gfb_hint "gfbwt clean $base_branch -b" "hapus worktree + branch-nya"
+  fi
 
   if [ -z "$branches" ]; then
     print
@@ -952,6 +999,14 @@ gfbls() {
     | awk '/checkout: moving from/ && !seen[$NF]++ {sub(/.*@\{/, "", $1); sub(/\}.*/, "", $1); print $1, $NF}')
   local current_branch=$(git branch --show-current 2>/dev/null)
 
+  # Branch yang terbuka di worktree lain (ditandai ⎇)
+  local -A wt_of
+  local -a wt_path wt_branch wt_head wt_flag; _gfbwt_load
+  local wi
+  for (( wi = 1; wi <= ${#wt_path}; wi++ )); do
+    [ -n "${wt_branch[wi]}" ] && wt_of[${wt_branch[wi]}]=${wt_path[wi]}
+  done
+
   # last used = max(checkout terakhir, update ref terakhir di reflog, commit terakhir)
   local now=$(date +%s)
   local sorted_branches
@@ -1019,7 +1074,9 @@ gfbls() {
     fi
 
     names+=("$name"); syncs+=("${sync% }"); sync_colors+=("$sync_color"); whens+=("$when")
-    if [ "$branch" = "$current_branch" ]; then marks+=("${G}●${N}"); else marks+=(" "); fi
+    if [ "$branch" = "$current_branch" ]; then marks+=("${G}●${N}")
+    elif $has_local && (( ${+wt_of[$branch]} )); then marks+=("${C}⎇${N}")
+    else marks+=(" "); fi
     (( ${#name} > name_w )) && name_w=${#name}
   done <<< "$sorted_branches"
 
@@ -1034,7 +1091,8 @@ gfbls() {
   done
 
   print
-  _gfb_note "● aktif   ↑ belum di-push   ↓ belum di-pull   ✓ sinkron   urut: terakhir dipakai"
+  _gfb_note "● aktif   ⎇ di worktree lain   ↑ belum di-push   ↓ belum di-pull   ✓ sinkron"
+  _gfb_note "urut: terakhir dipakai"
   print
 }
 
@@ -2239,6 +2297,15 @@ _gfbdel_execute() {
     return 1
   fi
 
+  # Branch terbuka di worktree lain → git tidak bisa menghapus branch lokalnya
+  local wt_at
+  if [ "$remote_only" != true ] && wt_at=$(_gfbwt_path_of "$branch"); then
+    _gfb_err "Branch '$branch' sedang terbuka di worktree:"
+    _gfb_note "${wt_at/#$HOME/~}" >&2
+    _gfb_hint "gfbwt rm -b $branch" "hapus worktree + branch sekaligus"
+    return 1
+  fi
+
   local has_local=false has_remote=false
   git show-ref --verify --quiet "refs/heads/$branch"          && has_local=true
   git show-ref --verify --quiet "refs/remotes/origin/$branch" && has_remote=true
@@ -2488,6 +2555,839 @@ gfbcompare() {
 }
 
 # ════════════════════════════════════════════════════════════════════
+# gfbwt — kelola git worktree: 1 branch = 1 folder, tanpa stash/checkout
+#   gfbwt                                → daftar worktree
+#   gfbwt add kiki/feat/SP-900 develop   → worktree branch baru dari develop
+#   gfbwt go 900                         → cd ke worktree yang cocok
+#   gfbwt main                           → kembali ke repo utama
+#   gfbwt rm -b kiki/feat/SP-900         → hapus worktree + branch
+#   gfbwt clean develop                  → hapus worktree yang sudah merged
+# Lokasi: ../<repo>.wt/<branch-slug>  (atau $GFB_WT_DIR/<repo>/<branch-slug>)
+# Setelah add: .env* di-copy, vendor/node_modules di-clone (APFS copy-on-write),
+# lalu .gfbwt-setup dijalankan kalau ada.
+# ════════════════════════════════════════════════════════════════════
+_gfbwt_usage() {
+  _gfb_head "gfbwt" "kelola git worktree"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Kerjakan beberapa branch sekaligus, masing-masing di folder sendiri."
+  _gfb_text "Tidak perlu stash/checkout bolak-balik; repo utama tetap di branch-nya."
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbwt [ls] [keyword]"
+  _gfb_use "gfbwt add [-p] [-i | -x] [-n] <branch> [base-branch]"
+  _gfb_use "gfbwt go [keyword]"
+  _gfb_use "gfbwt main"
+  _gfb_use "gfbwt rm [-b] [-f] [branch | keyword]"
+  _gfb_use "gfbwt clean [base-branch] [-b]"
+  _gfb_sec "Subcommand"
+  _gfb_opt "ls" "daftar worktree: status file, sinkron origin, commit terakhir"
+  _gfb_opt "add" "buat worktree; branch sudah ada → dipakai, belum → dari base"
+  _gfb_opt "go" "cd ke worktree (1 yang cocok → langsung, lebih → pilih)"
+  _gfb_opt "main" "cd kembali ke repo utama"
+  _gfb_opt "rm" "hapus worktree (perubahan belum commit → ditanya dulu)"
+  _gfb_opt "clean" "prune worktree yang foldernya hilang + yang sudah merged"
+  _gfb_sec "Opsi add"
+  _gfb_opt "-p" "push branch ke origin + set upstream"
+  _gfb_opt "-i" "composer install / npm ci, bukan clone dari repo utama"
+  _gfb_opt "-x" "tanpa vendor/node_modules sama sekali"
+  _gfb_opt "-n" "dry-run, hanya tampilkan rencana"
+  _gfb_note "flag bisa digabung: -pi, -pn"
+  _gfb_sec "Opsi rm / clean"
+  _gfb_opt "-b" "branch ikut dihapus (lokal + origin)"
+  _gfb_opt "-f" "rm: tanpa konfirmasi, buang perubahan yang belum di-commit"
+  _gfb_opt "-h" "bantuan ini"
+  _gfb_sec "Placeholder"
+  _gfb_opt "@" "add: base @ = branch aktif, nama prefix/@ = prefix/<branch-aktif>"
+  _gfb_opt "" "rm: @ = worktree tempat kamu berada sekarang"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbwt" "daftar worktree"
+  _gfb_ex "gfbwt add kiki/feat/SP-900 develop" "branch baru dari origin/develop"
+  _gfb_ex "gfbwt add kiki/feat/SP-829" "branch yang sudah ada (lokal/origin)"
+  _gfb_ex "gfbwt add -i fix/@ @" "fix/<aktif> dari branch aktif, deps di-install"
+  _gfb_ex "gfbwt go 829" "pindah ke worktree yang mengandung '829'"
+  _gfb_ex "gfbwt rm -b @" "hapus worktree ini + branch-nya"
+  _gfb_ex "gfbwt clean develop -b" "worktree merged ke develop + branch-nya"
+  _gfb_ex "gfb -pw develop kiki/feat/SP-901" "gfb versi worktree (lihat gfb -h)"
+  _gfb_sec "Lokasi folder"
+  _gfb_note "../<repo>.wt/<branch-dengan-/-jadi-->"
+  _gfb_note "set GFB_WT_DIR untuk memindah → \$GFB_WT_DIR/<repo>/<branch>"
+  _gfb_sec "Setup otomatis setelah add"
+  _gfb_bullet ".env dan .env.* yang tidak ada di worktree di-copy dari repo utama"
+  _gfb_bullet "vendor/ & node_modules/ di-clone (APFS copy-on-write: cepat, hemat disk)"
+  _gfb_bullet "file .gfbwt-setup (di worktree / repo utama) dijalankan kalau ada"
+  _gfb_note "env di hook: \$GFBWT_MAIN (repo utama), \$GFBWT_PATH (worktree baru)"
+  _gfb_note "vendor tidak di-symlink: __DIR__ PHP mengikuti symlink, jadi autoload"
+  _gfb_note "Composer akan memuat kode App\\ dari repo utama, bukan dari worktree."
+  _gfb_note "composer.lock beda dengan repo utama? pakai -i."
+  print
+}
+
+# Root repo utama (worktree pertama), path absolut
+_gfbwt_main() {
+  local common
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  print -r -- "${common:h}"
+}
+
+# Folder induk semua worktree buatan gfbwt untuk repo ini
+_gfbwt_root() {
+  local main
+  main=$(_gfbwt_main) || return 1
+  if [ -n "$GFB_WT_DIR" ]; then
+    print -r -- "${GFB_WT_DIR%/}/${main:t}"
+  else
+    print -r -- "${main:h}/${main:t}.wt"
+  fi
+}
+
+# Nama branch → nama folder: kiki/feat/SP-1 → kiki-feat-SP-1
+_gfbwt_slug() { local s=${1//\//-}; print -r -- "${s//[^A-Za-z0-9._-]/-}"; }
+
+# Isi array milik pemanggil dari "git worktree list --porcelain"
+#   pemanggil: local -a wt_path wt_branch wt_head wt_flag; _gfbwt_load
+#   index 1 = repo utama; wt_branch kosong = detached; wt_flag: prunable/locked/""
+_gfbwt_load() {
+  wt_path=() wt_branch=() wt_head=() wt_flag=()
+  local line p="" b="" h="" f=""
+  while IFS= read -r line; do
+    case $line in
+      "worktree "*) p=${line#worktree } b="" h="" f="" ;;
+      "HEAD "*)     h=${line#HEAD } ;;
+      "branch "*)   b=${line#branch refs/heads/} ;;
+      prunable*)    f=prunable ;;
+      locked*)      [ -z "$f" ] && f=locked ;;
+      "")
+        if [ -n "$p" ]; then
+          wt_path+=("$p") wt_branch+=("$b") wt_head+=("$h") wt_flag+=("$f")
+        fi
+        p="" ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null; print)
+}
+
+# Path worktree yang memegang branch (return 1 kalau tidak ada)
+_gfbwt_path_of() {
+  local -a wt_path wt_branch wt_head wt_flag; _gfbwt_load
+  local i
+  for (( i = 1; i <= ${#wt_path}; i++ )); do
+    if [ "${wt_branch[i]}" = "$1" ]; then
+      print -r -- "${wt_path[i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Isi wt_pick (milik pemanggil) dengan index worktree yang cocok keyword
+#   _gfbwt_filter <keyword> [skip-main]
+_gfbwt_filter() {
+  local keyword=$1 skip_main=$2 i
+  wt_pick=()
+  for (( i = 1; i <= ${#wt_path}; i++ )); do
+    [[ -n "$skip_main" && $i -eq 1 ]] && continue
+    [[ -n "$keyword" && "${wt_branch[i]}"$'\n'"${wt_path[i]}" != *"$keyword"* ]] && continue
+    wt_pick+=($i)
+  done
+  (( ${#wt_pick} ))
+}
+
+# Cetak daftar bernomor dari wt_pick: branch, status file, sinkron, commit terakhir, path
+_gfbwt_table() {
+  local B D N G R Y C M; _gfb_pal
+  local here i k=0 name_w=0 n p mark st st_c sync when lr dirty behind ahead tag
+  here=$(git rev-parse --show-toplevel 2>/dev/null) && here=${here:A}
+  local -a names=()
+  for i in $wt_pick; do
+    n=${wt_branch[i]:-"(detached ${wt_head[i][1,7]})"}
+    names+=("$n")
+    (( ${#n} > name_w )) && name_w=${#n}
+  done
+  (( name_w > 50 )) && name_w=50
+
+  print
+  for i in $wt_pick; do
+    (( k++ ))
+    p=${wt_path[i]} sync="" when="" tag=""
+    mark=" "
+    [[ -n "$here" && "${p:A}" == "$here" ]] && mark="${G}●${N}"
+    if [ "${wt_flag[i]}" = prunable ]; then
+      st="▲ hilang" st_c=$R
+    else
+      dirty=$(git -C "$p" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      if (( dirty )); then st="✎ $dirty file" st_c=$Y; else st="✓ bersih" st_c=$G; fi
+      lr=$(git -C "$p" rev-list --left-right --count '@{u}...HEAD' 2>/dev/null)
+      if [ -n "$lr" ]; then
+        behind=${lr%%[[:space:]]*} ahead=${lr##*[[:space:]]}
+        (( ahead > 0 ))  && sync+="↑$ahead "
+        (( behind > 0 )) && sync+="↓$behind"
+        [ -z "$sync" ] && sync="sinkron"
+      elif [ -n "${wt_branch[i]}" ]; then
+        sync="lokal saja"
+      fi
+      when=$(git -C "$p" log -1 --format=%cr 2>/dev/null)
+    fi
+    (( i == 1 )) && tag="  · repo utama"
+    [ "${wt_flag[i]}" = locked ] && tag+="  · locked"
+    printf "    ${D}%3d${N} %s %-${name_w}s  %s  ${D}%-10s  %s${N}\n" \
+      $k "$mark" "${names[k]}" "${st_c}${(r:10:)st}${N}" "${sync% }" "$when"
+    print -r -- "          ${D}${p/#$HOME/~}${tag}${N}"
+  done
+}
+
+# cd ke worktree + konfirmasi singkat
+_gfbwt_cd() {
+  local B D N G R Y C M; _gfb_pal
+  if [ ! -d "$1" ]; then
+    _gfb_err "Folder worktree tidak ada: ${1/#$HOME/~}"
+    _gfb_hint "gfbwt clean" "bersihkan worktree yang foldernya hilang"
+    return 1
+  fi
+  cd "$1" || return 1
+  _gfb_ok "Di ${B}$(_gfb_cur)${N}  ${D}${1/#$HOME/~}${N}"
+}
+
+# Siapkan worktree baru: .env*, vendor/node_modules, hook .gfbwt-setup
+#   _gfbwt_setup <repo-utama> <worktree> <clone|install|none>
+_gfbwt_setup() {
+  local main=$1 wt=$2 deps=$3 f d n=0 hook=""
+  local B D N G R Y C M; _gfb_pal
+
+  # hanya yang di-gitignore, supaya worktree baru tidak langsung "kotor"
+  for f in "$main"/.env(N) "$main"/.env.*(N); do
+    [[ -f "$f" && ! -e "$wt/${f:t}" ]] || continue
+    git -C "$main" check-ignore -q "${f:t}" || continue
+    cp -p "$f" "$wt/" && (( n++ ))
+  done
+  (( n )) && _gfb_step "Copy $n file .env ${D}dari repo utama${N}"
+
+  case $deps in
+    clone)
+      for d in vendor node_modules; do
+        [[ -d "$main/$d" && ! -e "$wt/$d" ]] || continue
+        _gfb_step "Clone $d ${D}(copy-on-write)${N}"
+        if ! cp -Rc "$main/$d" "$wt/$d" 2>/dev/null; then
+          rm -rf "$wt/$d"
+          cp -R "$main/$d" "$wt/$d" || _gfb_warn "Gagal copy $d."
+        fi
+      done
+      ;;
+    install)
+      if [ -f "$wt/composer.json" ]; then
+        if (( $+commands[composer] )); then
+          _gfb_step "composer install"
+          (cd "$wt" && composer install -q --no-interaction) || _gfb_warn "composer install gagal."
+        else
+          _gfb_warn "composer tidak ditemukan, vendor dilewati."
+        fi
+      fi
+      if [ -f "$wt/package.json" ]; then
+        if (( $+commands[npm] )); then
+          _gfb_step "npm install"
+          if [ -f "$wt/package-lock.json" ]; then
+            (cd "$wt" && npm ci --silent) || _gfb_warn "npm ci gagal."
+          else
+            (cd "$wt" && npm install --silent) || _gfb_warn "npm install gagal."
+          fi
+        else
+          _gfb_warn "npm tidak ditemukan, node_modules dilewati."
+        fi
+      fi
+      ;;
+  esac
+
+  if [ -f "$wt/.gfbwt-setup" ]; then
+    hook="$wt/.gfbwt-setup"
+  elif [ -f "$main/.gfbwt-setup" ]; then
+    hook="$main/.gfbwt-setup"
+  fi
+  if [ -n "$hook" ]; then
+    _gfb_step "Jalankan .gfbwt-setup ${D}(${hook:h:t})${N}"
+    (cd "$wt" && GFBWT_MAIN="$main" GFBWT_PATH="$wt" zsh "$hook") || _gfb_warn ".gfbwt-setup gagal."
+  fi
+}
+
+gfbwt() {
+  local sub=${1:-ls}
+  (( $# )) && shift
+  case $sub in
+    -h|--help|help) _gfbwt_usage ;;
+    ls|list)        _gfbwt_ls "$@" ;;
+    add|new)        _gfbwt_add "$@" ;;
+    go|cd)          _gfbwt_go "$@" ;;
+    main)           _gfb_repo && _gfbwt_cd "$(_gfbwt_main)" ;;
+    rm|remove)      _gfbwt_rm "$@" ;;
+    clean)          _gfbwt_clean "$@" ;;
+    *) _gfb_bad gfbwt "Subcommand tidak dikenal: $sub"; return 1 ;;
+  esac
+}
+
+_gfbwt_ls() {
+  local keyword=""
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbwt_usage; return 0 ;;
+      -*) _gfb_bad gfbwt "Flag tidak dikenal: $1"; return 1 ;;
+      *) keyword=$1 ;;
+    esac
+    shift
+  done
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+  local -a wt_path wt_branch wt_head wt_flag wt_pick; _gfbwt_load
+  local main=$(_gfbwt_main)
+
+  _gfb_head "gfbwt" "worktree ${main:t}"
+  _gfb_kv "total" "${#wt_path} ${D}(termasuk repo utama)${N}"
+  _gfb_kv "lokasi" "$(_gfbwt_root | sed "s|^$HOME|~|") ${D}(untuk worktree baru)${N}"
+  [ -n "$keyword" ] && _gfb_kv "keyword" "$keyword"
+
+  if ! _gfbwt_filter "$keyword"; then
+    print
+    _gfb_warn "Tidak ada worktree yang cocok dengan '$keyword'."
+    print
+    return 0
+  fi
+  _gfbwt_table
+
+  print
+  _gfb_note "● di sini   ✎ belum di-commit   ↑ belum di-push   ↓ belum di-pull"
+  if (( ${wt_flag[(I)prunable]} )); then
+    _gfb_hint "gfbwt clean" "bersihkan worktree yang foldernya hilang"
+  elif (( ${#wt_path} == 1 )); then
+    _gfb_hint "gfbwt add <branch> [base]" "buat worktree pertama"
+  fi
+  print
+}
+
+_gfbwt_add() {
+  local push=false deps=clone dry_run=false branch="" base="" i c
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbwt_usage; return 0 ;;
+      --push) push=true ;;
+      --install) deps=install ;;
+      --no-deps) deps=none ;;
+      --dry-run) dry_run=true ;;
+      --*) _gfb_bad gfbwt "Flag tidak dikenal: $1"; return 1 ;;
+      -?*)
+        for (( i = 2; i <= ${#1}; i++ )); do
+          c=${1[i]}
+          case $c in
+            p) push=true ;;
+            i) deps=install ;;
+            x) deps=none ;;
+            n) dry_run=true ;;
+            h) _gfbwt_usage; return 0 ;;
+            *) _gfb_bad gfbwt "Flag tidak dikenal: -$c (dari $1)"; return 1 ;;
+          esac
+        done
+        ;;
+      *)
+        if [ -z "$branch" ]; then branch=$1
+        elif [ -z "$base" ]; then base=$1
+        else _gfb_bad gfbwt "Argumen berlebih: $1"; return 1
+        fi
+        ;;
+    esac
+    shift
+  done
+  if [ -z "$branch" ]; then
+    _gfb_bad gfbwt "Nama branch wajib diisi."
+    return 1
+  fi
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+  local current=$(_gfb_cur)
+
+  # Placeholder @
+  if [[ "$branch" == */@ || "$base" == @ ]] && [ "$current" = HEAD ]; then
+    _gfb_err "Sedang detached HEAD, placeholder @ tidak bisa dipakai."
+    return 1
+  fi
+  case $branch in
+    @) _gfb_err "Branch aktif sudah terbuka di sini, tidak bisa dibuat worktree kedua."
+       _gfb_note "Untuk branch turunan pakai prefix/@, mis. gfbwt add fix/@ @" >&2
+       return 1 ;;
+    */@) branch="${branch%@}$current" ;;
+  esac
+  base=$(_gfb_ref "$base")
+  if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+    _gfb_err "Nama branch tidak valid: $branch"
+    return 1
+  fi
+
+  # Branch sudah punya worktree → langsung ke sana
+  local existing
+  if existing=$(_gfbwt_path_of "$branch"); then
+    print
+    _gfb_info "Branch ${B}$branch${N} sudah punya worktree."
+    [ "$dry_run" = true ] && { _gfb_note "${existing/#$HOME/~}"; print; return 0; }
+    _gfbwt_cd "$existing"
+    print
+    return
+  fi
+
+  _gfb_head "gfbwt add" "buat worktree"
+  _gfb_step "Fetch origin"
+  git fetch -q origin 2>/dev/null
+  _gfb_unwait
+
+  local mode start
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    mode=local start=$branch
+  elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    mode=remote start="origin/$branch"
+  else
+    mode=new
+    if [ -z "$base" ]; then
+      _gfb_err "Branch '$branch' belum ada (lokal maupun origin)."
+      _gfb_hint "gfbwt add $branch <base-branch>" "buat baru dari base"
+      print
+      return 1
+    fi
+    if git show-ref --verify --quiet "refs/remotes/origin/$base"; then
+      start="origin/$base"
+    elif git show-ref --verify --quiet "refs/heads/$base"; then
+      start=$base
+    else
+      _gfb_err "Base branch '$base' tidak ditemukan (lokal maupun origin)."
+      print
+      return 1
+    fi
+  fi
+
+  local main=$(_gfbwt_main) root=$(_gfbwt_root)
+  local wt_dir="$root/$(_gfbwt_slug "$branch")"
+  local deps_desc
+  case $deps in
+    clone)   deps_desc="clone vendor/node_modules dari repo utama ${D}(-i install, -x tanpa)${N}" ;;
+    install) deps_desc="composer install / npm ci" ;;
+    none)    deps_desc="${D}tidak${N}" ;;
+  esac
+
+  _gfb_kv "branch" "${B}$branch${N}"
+  case $mode in
+    local)  _gfb_kv "sumber" "branch lokal yang sudah ada" ;;
+    remote) _gfb_kv "sumber" "origin/$branch ${D}(tracking)${N}" ;;
+    new)    _gfb_kv "sumber" "branch baru dari $start" ;;
+  esac
+  [[ $mode != new && -n "$base" ]] && _gfb_note "base '$base' diabaikan karena branch sudah ada"
+  _gfb_kv "folder" "${wt_dir/#$HOME/~}"
+  _gfb_kv "deps" "$deps_desc"
+  _gfb_kv "push" "$([ "$push" = true ] && echo "ya" || echo "${D}tidak — tambah -p untuk push${N}")"
+
+  if [ -e "$wt_dir" ]; then
+    print
+    _gfb_err "Folder sudah ada: ${wt_dir/#$HOME/~}"
+    _gfb_note "Hapus/pindahkan folder itu dulu, atau cek: gfbwt ls" >&2
+    print
+    return 1
+  fi
+  if [ "$dry_run" = true ]; then
+    print
+    _gfb_info "Dry-run — tidak ada yang dijalankan."
+    print
+    return 0
+  fi
+
+  print
+  _gfb_step "Buat worktree"
+  mkdir -p "$root" || return 1
+  case $mode in
+    local)  git worktree add -q "$wt_dir" "$branch" ;;
+    remote) git worktree add -q --track -b "$branch" "$wt_dir" "origin/$branch" ;;
+    new)    git worktree add -q --no-track -b "$branch" "$wt_dir" "$start" ;;
+  esac || { _gfb_err "Gagal membuat worktree."; return 1; }
+
+  _gfbwt_setup "$main" "$wt_dir" "$deps"
+
+  if [ "$push" = true ]; then
+    _gfb_step "Push ke origin"
+    git -C "$wt_dir" push -q -u origin "$branch" || _gfb_warn "Push gagal — coba lagi: git push -u origin $branch"
+  fi
+
+  print
+  _gfbwt_cd "$wt_dir"
+  _gfb_hint "gfbwt main" "kembali ke repo utama"
+  print
+}
+
+_gfbwt_go() {
+  local keyword=""
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbwt_usage; return 0 ;;
+      -*) _gfb_bad gfbwt "Flag tidak dikenal: $1"; return 1 ;;
+      *) keyword=$1 ;;
+    esac
+    shift
+  done
+  _gfb_repo || return 1
+
+  local -a wt_path wt_branch wt_head wt_flag wt_pick; _gfbwt_load
+  local i sel
+  # Nama branch persis → langsung
+  for (( i = 1; i <= ${#wt_branch}; i++ )); do
+    [[ -n "$keyword" && "${wt_branch[i]}" == "$keyword" ]] && { _gfbwt_cd "${wt_path[i]}"; return; }
+  done
+
+  if ! _gfbwt_filter "$keyword"; then
+    _gfb_err "Tidak ada worktree yang cocok dengan '$keyword'."
+    _gfb_hint "gfbwt add $keyword" "buat worktree-nya"
+    return 1
+  fi
+  if [[ -n "$keyword" && ${#wt_pick} -eq 1 ]]; then
+    _gfbwt_cd "${wt_path[wt_pick[1]]}"
+    return
+  fi
+
+  _gfb_head "gfbwt go" "pindah ke worktree"
+  _gfbwt_table
+  _gfb_ask sel "Pilih nomor worktree" "(Enter = batal)"
+  if [ -z "$sel" ]; then
+    _gfb_info "Dibatalkan."
+    print
+    return 0
+  fi
+  if ! [[ "$sel" == <-> ]] || (( sel < 1 || sel > ${#wt_pick} )); then
+    _gfb_err "Nomor tidak valid: $sel"
+    return 1
+  fi
+  print
+  _gfbwt_cd "${wt_path[wt_pick[sel]]}"
+  print
+}
+
+_gfbwt_rm() {
+  local keyword="" del_branch=false force=false
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbwt_usage; return 0 ;;
+      -b|--branch) del_branch=true ;;
+      -f|--force) force=true ;;
+      -bf|-fb) del_branch=true force=true ;;
+      -*) _gfb_bad gfbwt "Flag tidak dikenal: $1"; return 1 ;;
+      *) keyword=$1 ;;
+    esac
+    shift
+  done
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+  local -a wt_path wt_branch wt_head wt_flag wt_pick; _gfbwt_load
+  local main=$(_gfbwt_main) idx="" i sel
+  keyword=$(_gfb_ref "$keyword")
+
+  _gfb_head "gfbwt rm" "hapus worktree"
+
+  if (( ${#wt_path} < 2 )); then
+    _gfb_info "Belum ada worktree selain repo utama."
+    print
+    return 0
+  fi
+  if [[ -n "$keyword" && "${wt_branch[1]}" == "$keyword" ]]; then
+    _gfb_err "Branch '$keyword' ada di repo utama — repo utama tidak bisa dihapus."
+    return 1
+  fi
+  for (( i = 2; i <= ${#wt_path}; i++ )); do
+    [[ -n "$keyword" && "${wt_branch[i]}" == "$keyword" ]] && idx=$i
+  done
+  if [ -z "$idx" ]; then
+    if ! _gfbwt_filter "$keyword" 1; then
+      _gfb_warn "Tidak ada worktree yang cocok dengan '$keyword'."
+      print
+      return 1
+    fi
+    _gfbwt_table
+    _gfb_ask sel "Pilih nomor worktree yang dihapus" "(Enter = batal)"
+    if [ -z "$sel" ]; then
+      _gfb_info "Dibatalkan."
+      print
+      return 0
+    fi
+    if ! [[ "$sel" == <-> ]] || (( sel < 1 || sel > ${#wt_pick} )); then
+      _gfb_err "Nomor tidak valid: $sel"
+      return 1
+    fi
+    idx=${wt_pick[sel]}
+    print
+  fi
+
+  local wt_dir=${wt_path[idx]} br=${wt_branch[idx]} missing=false changes=""
+  [ "${wt_flag[idx]}" = prunable ] && missing=true
+  if [[ "$del_branch" = true && -z "$br" ]]; then
+    _gfb_warn "Worktree detached HEAD — tidak ada branch untuk dihapus, -b diabaikan."
+    del_branch=false
+  fi
+  if [[ "$del_branch" = true && "$br" =~ $GFB_PROTECTED ]]; then
+    _gfb_err "Branch '$br' dilindungi — hapus tanpa -b."
+    return 1
+  fi
+
+  _gfb_sec "Akan dihapus"
+  _gfb_kv "folder" "${wt_dir/#$HOME/~}$($missing && echo " ${D}(sudah hilang)${N}")"
+  if [ -n "$br" ]; then
+    if [ "$del_branch" = true ]; then
+      _gfb_kv "branch" "$br ${R}ikut dihapus${N} ${D}(lokal + origin, dikonfirmasi lagi)${N}"
+    else
+      _gfb_kv "branch" "$br ${D}tetap ada — tambah -b untuk ikut hapus${N}"
+    fi
+  fi
+
+  if ! $missing; then
+    changes=$(git -C "$wt_dir" status --porcelain 2>/dev/null)
+    if [ -n "$changes" ]; then
+      local -a ch=(${(f)changes})
+      print
+      _gfb_warn "${#ch} perubahan belum di-commit — akan ${B}HILANG${N}:"
+      for i in "${(@)ch[1,10]}"; do _gfb_note "$i"; done
+      (( ${#ch} > 10 )) && _gfb_note "… dan $(( ${#ch} - 10 )) lainnya"
+    fi
+    if [ -n "$br" ]; then
+      local unpushed
+      unpushed=$(git -C "$wt_dir" rev-list --count '@{u}..HEAD' 2>/dev/null)
+      (( unpushed > 0 )) && _gfb_warn "$unpushed commit belum di-push ${D}(tetap aman di branch selama branch tidak dihapus)${N}"
+    fi
+  fi
+
+  if [ "$force" != true ]; then
+    local def=y
+    [ -n "$changes" ] && def=n
+    if ! _gfb_confirm "Hapus worktree ini?" $def; then
+      _gfb_info "Dibatalkan."
+      print
+      return 0
+    fi
+  fi
+
+  # Sedang berada di dalam worktree yang dihapus → pindah ke repo utama dulu
+  if [[ "${PWD:A}/" == "${wt_dir:A}/"* ]]; then
+    cd "$main" || return 1
+    _gfb_step "Pindah ke repo utama"
+  fi
+
+  print
+  _gfb_step "Hapus worktree"
+  if $missing; then
+    git worktree prune || { _gfb_err "Gagal prune worktree."; return 1; }
+  else
+    git worktree remove ${changes:+--force} "$wt_dir" || { _gfb_err "Gagal menghapus worktree."; return 1; }
+  fi
+  rmdir "${wt_dir:h}" 2>/dev/null   # folder <repo>.wt yang kosong ikut dibersihkan
+  _gfb_ok "Worktree dihapus."
+
+  if [ "$del_branch" = true ]; then
+    print
+    _gfbdel_execute "$br" false false
+    return
+  fi
+  print
+}
+
+_gfbwt_clean() {
+  local base="" del_branch=false
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbwt_usage; return 0 ;;
+      -b|--branch) del_branch=true ;;
+      -*) _gfb_bad gfbwt "Flag tidak dikenal: $1"; return 1 ;;
+      *) base=$1 ;;
+    esac
+    shift
+  done
+  _gfb_repo || return 1
+
+  local B D N G R Y C M; _gfb_pal
+  local -a wt_path wt_branch wt_head wt_flag wt_pick; _gfbwt_load
+  local main=$(_gfbwt_main) i b n_missing=0
+  base=$(_gfb_ref "$base")
+
+  _gfb_head "gfbwt clean" "${base:+worktree yang sudah merged ke $base}"
+
+  for (( i = 2; i <= ${#wt_path}; i++ )); do
+    [ "${wt_flag[i]}" = prunable ] && (( n_missing++ ))
+  done
+  if (( n_missing )); then
+    _gfb_step "Prune $n_missing worktree yang foldernya hilang"
+    git worktree prune && _gfb_ok "$n_missing worktree hilang dibersihkan."
+    _gfbwt_load
+  else
+    _gfb_ok "Tidak ada worktree yang foldernya hilang."
+  fi
+
+  if [ -z "$base" ]; then
+    _gfb_hint "gfbwt clean <base-branch> [-b]" "cari worktree yang sudah merged"
+    print
+    return 0
+  fi
+
+  _gfb_step "Fetch $base"
+  git fetch -q origin "$base" 2>/dev/null
+  _gfb_unwait
+  local ref
+  if git show-ref --verify --quiet "refs/remotes/origin/$base"; then ref="origin/$base"
+  elif git show-ref --verify --quiet "refs/heads/$base"; then ref=$base
+  else _gfb_err "Base branch '$base' tidak ditemukan."; return 1; fi
+
+  wt_pick=()
+  for (( i = 2; i <= ${#wt_path}; i++ )); do
+    b=${wt_branch[i]}
+    [[ -z "$b" || "$b" == "$base" || "$b" =~ $GFB_PROTECTED ]] && continue
+    git merge-base --is-ancestor "refs/heads/$b" "$ref" 2>/dev/null && wt_pick+=($i)
+  done
+  if (( ${#wt_pick} == 0 )); then
+    _gfb_ok "Tidak ada worktree yang sudah merged ke $ref."
+    print
+    return 0
+  fi
+
+  _gfb_sec "Sudah merged ke $ref" "${#wt_pick} worktree"
+  _gfbwt_table
+  _gfb_note "branch baru tanpa commit juga terhitung merged — cek dulu sebelum pilih"
+
+  local selection
+  _gfb_ask selection "Pilih nomor" "(1 3 / 1,3 / all, Enter = batal)"
+  local -a chosen=() nums=()
+  local num
+  if [[ "$selection" == all ]]; then
+    chosen=("${wt_pick[@]}")
+  else
+    nums=(${=${selection//,/ }})
+    for num in "${nums[@]}"; do
+      if [[ "$num" == <-> ]] && (( num >= 1 && num <= ${#wt_pick} )); then
+        chosen+=(${wt_pick[num]})
+      else
+        _gfb_warn "Nomor '$num' tidak valid, dilewati."
+      fi
+    done
+  fi
+  if (( ${#chosen} == 0 )); then
+    _gfb_info "Tidak ada yang dipilih. Dibatalkan."
+    print
+    return 0
+  fi
+
+  local what="${#chosen} worktree"
+  $del_branch && what+=" + branch (lokal + origin)"
+  _gfb_sec "Akan dihapus" "$what"
+  for i in $chosen; do _gfb_bullet "${wt_branch[i]}"; done
+  $del_branch || _gfb_note "branch tetap ada — tambah -b untuk ikut hapus"
+  if ! _gfb_confirm "Lanjut?" n; then
+    _gfb_info "Dibatalkan."
+    print
+    return 0
+  fi
+
+  print
+  local done_count=0 p
+  for i in $chosen; do
+    p=${wt_path[i]} b=${wt_branch[i]}
+    if [ -n "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
+      _gfb_warn "$b ${D}— ada perubahan belum di-commit, dilewati (pakai gfbwt rm)${N}"
+      continue
+    fi
+    [[ "${PWD:A}/" == "${p:A}/"* ]] && cd "$main"
+    if ! git worktree remove "$p" 2>/dev/null; then
+      _gfb_warn "$b ${D}— gagal hapus worktree${N}"
+      continue
+    fi
+    rmdir "${p:h}" 2>/dev/null
+    if $del_branch; then
+      if ! git branch -q -d "$b" 2>/dev/null; then
+        _gfb_warn "$b ${D}— worktree terhapus, branch lokal gagal (pakai gfbdel)${N}"
+        continue
+      fi
+      if git show-ref --verify --quiet "refs/remotes/origin/$b" && ! git push -q origin --delete "$b" 2>/dev/null; then
+        _gfb_warn "$b ${D}— worktree + lokal terhapus, origin gagal${N}"
+        continue
+      fi
+    fi
+    _gfb_ok "$b"
+    (( done_count++ ))
+  done
+  print
+  _gfb_ok "${B}$done_count dari ${#chosen} worktree dihapus.${N}"
+  print
+}
+
+# Dipakai gfb -w: buat branch baru langsung sebagai worktree
+#   _gfbwt_from_gfb <base> <branch> <branch-aktif> <merge:true|false> <push:true|false>
+_gfbwt_from_gfb() {
+  local base=$1 branch=$2 current=$3 merge=$4 push=$5
+  local B D N G R Y C M; _gfb_pal
+  local main=$(_gfbwt_main) root=$(_gfbwt_root) start
+  local wt_dir="$root/$(_gfbwt_slug "$branch")"
+
+  _gfb_step "Fetch $base"
+  if ! git fetch -q origin "$base"; then
+    _gfb_err "Gagal fetch $base dari origin."
+    return 1
+  fi
+  start="origin/$base"
+  git show-ref --verify --quiet "refs/remotes/origin/$base" || start=$base
+
+  _gfb_step "Buat worktree $branch ${D}dari $start${N}"
+  mkdir -p "$root" || return 1
+  if ! git worktree add -q --no-track -b "$branch" "$wt_dir" "$start"; then
+    _gfb_err "Gagal membuat worktree."
+    return 1
+  fi
+  _gfbwt_setup "$main" "$wt_dir" clone
+
+  if [ "$merge" = true ]; then
+    _gfb_step "Merge $current"
+    if ! git -C "$wt_dir" merge "$current"; then
+      print
+      _gfb_warn "Ada conflict saat merge. Selesaikan manual di worktree lalu commit."
+      [ "$push" = true ] && _gfb_hint "git push -u origin $branch" "push setelah selesai"
+      cd "$wt_dir"
+      print
+      return 1
+    fi
+  fi
+
+  if [ "$push" = true ]; then
+    _gfb_step "Push ke origin"
+    if ! git -C "$wt_dir" push -q -u origin "$branch"; then
+      _gfb_err "Push gagal."
+      _gfb_hint "git push -u origin $branch" "coba lagi"
+      cd "$wt_dir"
+      return 1
+    fi
+  fi
+
+  print
+  _gfb_ok "Branch ${B}$branch${N} siap di worktree$([ "$push" = true ] && echo " dan sudah di-push")."
+  _gfbwt_cd "$wt_dir"
+  _gfb_hint "gfbwt main" "kembali ke repo utama"
+  print
+}
+
+# Tab completion
+_gfbwt_wt_branches() {
+  local -a wt_path wt_branch wt_head wt_flag; _gfbwt_load
+  local -a brs=(${wt_branch[2,-1]:#})
+  _describe 'worktree' brs
+}
+_gfbwt() {
+  if (( CURRENT == 2 )); then
+    local -a subs=(
+      'ls:daftar worktree' 'add:buat worktree' 'go:pindah ke worktree'
+      'main:kembali ke repo utama' 'rm:hapus worktree' 'clean:hapus worktree yang sudah merged'
+    )
+    _describe 'subcommand' subs
+    return
+  fi
+  case $words[2] in
+    add)   _gfb_branches ;;
+    go|rm) _gfbwt_wt_branches ;;
+    clean) _gfb_branches ;;
+  esac
+}
+(( $+functions[compdef] )) && compdef _gfbwt gfbwt
+
+# ════════════════════════════════════════════════════════════════════
 # gfbmain — ringkasan semua perintah GFB
 #   gfbmain                   → ringkasan
 #   gfbmain help gfbstatus    → bantuan detail (juga: gfbmain help status, gfbmain gfbstatus)
@@ -2517,6 +3417,15 @@ gfbmain() {
   _gfb_opt "gfbdel"       "hapus branch lokal + origin"
   _gfb_opt "gfbclean"     "hapus branch yang sudah merged"
   _gfb_opt "gfbcheck"     "branch yang belum merged"
+
+  _gfb_sec "Worktree" "1 branch = 1 folder, tanpa stash/checkout"
+  _gfb_opt "gfbwt"        "daftar worktree + status file & sinkron"
+  _gfb_opt "gfbwt add"    "buat worktree (+ .env, vendor, node_modules)"
+  _gfb_opt "gfbwt go"     "pindah (cd) ke worktree"
+  _gfb_opt "gfbwt main"   "kembali ke repo utama"
+  _gfb_opt "gfbwt rm"     "hapus worktree (-b: + branch-nya)"
+  _gfb_opt "gfbwt clean"  "hapus worktree hilang / sudah merged"
+  _gfb_opt "gfb -w"       "buat branch baru langsung sebagai worktree"
 
   _gfb_sec "Inspeksi"
   _gfb_opt "gfbstatus"    "git status versi lengkap (+ recap AI)"
