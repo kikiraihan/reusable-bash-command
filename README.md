@@ -111,6 +111,7 @@ gfb -pw develop kiki/feat/SP-901      # gfb versi worktree: repo utama tidak di-
 ```
 
 - Lokasi: `../<repo>.wt/<branch-slug>` (ubah dengan `GFB_WT_DIR`).
+  Kalau folder induk repo punya `.gfbwt-ws`, lokasinya jadi `<induk>/.wt/<branch-slug>/<repo>` (lihat workspace multi-repo di bawah).
 - Setelah `add`: `.env*` yang di-gitignore di-copy dari repo utama, `vendor/` & `node_modules/`
   di-clone dengan APFS copy-on-write (`-i` untuk `composer install`/`npm ci`, `-x` tanpa deps),
   lalu `.gfbwt-setup` dijalankan kalau ada.
@@ -118,6 +119,41 @@ gfb -pw develop kiki/feat/SP-901      # gfb versi worktree: repo utama tidak di-
   akan memuat kode dari repo utama, bukan dari worktree.
 - Terintegrasi: `gfbls` menandai branch di worktree lain dengan `⎇`, `gfbdel`/`gfbclean` tidak
   mencoba menghapus branch yang masih terbuka di worktree.
+
+**`gfbwt ws`** — workspace multi-repo: 1 branch = 1 folder berisi beberapa repo yang sejajar.
+Cocok kalau satu fitur menyentuh beberapa repo (mis. backend + admin panel) dalam satu folder induk.
+
+```
+projects/                     ← folder induk, berisi .gfbwt-ws
+├── api-gateway/              ← repo utama (tetap)
+├── web-dashboard/            ← repo utama (tetap)
+└── .wt/
+    └── kiki-feat-SP-900/     ← 1 workspace = 1 branch
+        ├── api-gateway/      ← worktree
+        └── web-dashboard/    ← worktree, branch sama, sejajar
+```
+
+```bash
+# projects/.gfbwt-ws — per baris: <alias> <folder-repo> [base-default]
+api   api-gateway     develop
+web   web-dashboard   develop
+```
+
+```bash
+gfbwt ws                                   # daftar workspace + status tiap repo + worktree di lokasi lama
+gfbwt ws add kiki/feat/SP-900 api web      # worktree kedua repo sekaligus (semua dicek dulu)
+gfbwt ws add @ web                         # lagi kerja di api, tambah web di sebelahnya (branch sama)
+gfbwt ws add kiki/feat/SP-900 web:master   # base khusus untuk repo itu
+gfbwt ws go web                            # dari dalam workspace → pindah ke repo web
+gfbwt ws rm -b @                           # hapus workspace ini + branch-nya di semua repo
+gfbwt ws migrate                           # pindahkan worktree lama <repo>.wt/... ke .wt/<branch>/<repo>
+```
+
+- Dengan `.gfbwt-ws`, `gfbwt add` / `gfb -w` biasa juga menaruh worktree di `.wt/<branch>/<repo>`,
+  jadi hanya ada satu aturan lokasi dan repo lain dengan branch yang sama selalu ada di folder sebelah.
+- Tanpa symlink: `../web-dashboard` dari dalam worktree tetap mengarah ke pasangannya, grep/IDE aman.
+- Branch yang sudah punya worktree di lokasi lama → `ws add` menawarkan pindah (`git worktree move`,
+  perubahan yang belum di-commit ikut pindah).
 
 > Screenshot diambil dari repo demo (`api-gateway`, `web-dashboard`, `mobile-app`) dengan data commit contoh.
 
