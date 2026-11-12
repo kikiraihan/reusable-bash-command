@@ -248,6 +248,31 @@ gfbwt ws serve reset              # api → develop, web → master + stash dike
 - `gfbwt ws` menandai workspace yang sedang dipakai repo utama dengan `◉ serve: api, web`.
 - State tersimpan di `<induk>/.wt/.gfbwt-serve`.
 
+**`gfbwt ws config`** — rawat `.gfbwt-ws`: file ini hanya dibaca oleh perintah lain, jadi lama-lama bisa usang
+
+```bash
+gfbwt ws config        # cek base usang/kosong + repo yang punya worktree di .wt tapi belum terdaftar
+gfbwt ws config -n     # dry-run
+gfbwt ws config -a     # + tawarkan semua repo git di folder induk
+gfbwt ws config -y     # terapkan tanpa tanya (alias pakai usulan)
+```
+
+```
+    alias    repo            base      aktif     status
+    api      api-gateway     develop   master    ▲ usang (develop terakhir 203 hari lalu, master 20 jam lalu)
+    web      web-dashboard   develop   develop   ✓
+    biller?  biller-service  -         master    ＋ belum terdaftar, punya 1 worktree
+  ? Terapkan 2 perubahan ke .gfbwt-ws? [Y/n]
+```
+
+- **Base aktif** = `master`/`main`/`develop` yang commit terakhirnya paling baru (origin, lalu lokal).
+  `origin/HEAD` sengaja tidak dipakai karena sering tertinggal (masih `develop` padahal tim sudah pindah ke `master`).
+- **Usang** = base tertulis tertinggal lebih dari 30 hari dari base aktif (ubah dengan `GFBWT_STALE_DAYS`).
+- Komentar dan urutan baris di `.gfbwt-ws` dipertahankan.
+- `gfbwt add` / `gfb -w` untuk repo yang belum terdaftar (tapi folder induknya workspace) langsung menawarkan
+  pendaftaran: `? Daftarkan sebagai alias? (Enter = biller, base master; - = tidak)`.
+- `gfbwt ws` menampilkan `config ▲ …  → gfbwt ws config` kalau ada yang perlu dirawat.
+
 **`gfbrepos`** — dari folder induk, lihat branch aktif semua repo di bawahnya sekaligus
 
 ```bash
