@@ -255,6 +255,8 @@ gfbwt ws config        # cek base usang/kosong + repo yang punya worktree di .wt
 gfbwt ws config -n     # dry-run
 gfbwt ws config -a     # + tawarkan semua repo git di folder induk
 gfbwt ws config -y     # terapkan tanpa tanya (alias pakai usulan)
+gfbwt ws check         # cek saja: masih ada repo git di folder induk yang belum terbaca .gfbwt-ws?
+                       #   exit 1 kalau ada temuan → bisa dipakai di script / hook
 ```
 
 ```

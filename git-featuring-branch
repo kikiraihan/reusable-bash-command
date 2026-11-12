@@ -3238,6 +3238,7 @@ _gfbwt_usage() {
   _gfb_use "gfbwt ws serve [status | @ | keyword] [repo...] [-y] [-n]"
   _gfb_use "gfbwt ws serve reset [repo... | all] [-b] [-p] [-y] [-n]"
   _gfb_use "gfbwt ws config [-a] [-y] [-n]"
+  _gfb_use "gfbwt ws check"
   _gfb_opt "ws ls" "daftar workspace + status tiap repo + worktree di lokasi lama"
   _gfb_opt "ws add" "buat/tambah repo ke workspace branch itu (semua dicek dulu)"
   _gfb_opt "" "branch sudah punya worktree di lokasi lama → ditawari pindah"
@@ -3251,6 +3252,8 @@ _gfbwt_usage() {
   _gfb_opt "ws config" "rawat .gfbwt-ws: perbaiki base usang, daftarkan repo baru"
   _gfb_opt "" "base aktif = master/main/develop yang commit terakhirnya paling baru"
   _gfb_opt "" "-a: + semua repo git di folder induk, -n: dry-run, -y: tanpa tanya"
+  _gfb_opt "ws check" "cek saja: repo git di folder induk yang belum terbaca .gfbwt-ws"
+  _gfb_opt "" "+ base usang; exit 1 kalau ada temuan (bisa dipakai di script)"
   _gfb_opt "@" "ws add: branch aktif / branch workspace tempat kamu berada"
   _gfb_ex "gfbwt ws add kiki/feat/SP-900 pg mono" "worktree PG + BOSS sekaligus"
   _gfb_ex "gfbwt ws add @ mono" "lagi kerja di PG, tambah BOSS di sebelahnya"
@@ -3265,6 +3268,7 @@ _gfbwt_usage() {
   _gfb_ex "gfbwt ws serve reset all -bp" "semua repo utama ke base + pull"
   _gfb_ex "gfbwt ws config" "cek base usang + repo ber-worktree yang belum terdaftar"
   _gfb_ex "gfbwt ws config -a" "+ tawarkan semua repo git di folder induk"
+  _gfb_ex "gfbwt ws check" "ada repo yang belum terdaftar? (tanpa mengubah file)"
   _gfb_sec "Catatan ws serve"
   _gfb_bullet "yang ikut hanya yang sudah di-commit; ada commit baru → jalankan serve lagi (↻)"
   _gfb_bullet "repo utama kotor → di-stash dulu, dikembalikan (stash pop) saat reset"
@@ -4262,6 +4266,7 @@ _gfbwt_ws() {
     migrate)        _gfbwt_ws_migrate "$@" ;;
     serve|use)      _gfbwt_ws_serve "$@" ;;
     config|conf)    _gfbwt_ws_config "$@" ;;
+    check)          _gfbwt_ws_config --check "$@" ;;
     *) _gfb_bad gfbwt "Subcommand ws tidak dikenal: $sub"; return 1 ;;
   esac
 }
@@ -4898,10 +4903,11 @@ _gfbwt_ws_conf_scan() {
 }
 
 _gfbwt_ws_config() {
-  local yes=false dry=false all=false t
+  local yes=false dry=false all=false check=false t
   while [[ "$#" -gt 0 ]]; do
     case $1 in
       -h|--help) _gfbwt_usage; return 0 ;;
+      --check) check=true dry=true all=true ;;
       -y|--yes) yes=true ;;
       -n|--dry-run) dry=true ;;
       -a|--all) all=true ;;
@@ -4924,7 +4930,11 @@ _gfbwt_ws_config() {
   _gfbwt_ws_conf "$ws"
   _gfbwt_ws_conf_scan $([ "$all" = true ] && print all)
 
-  _gfb_head "gfbwt ws config" "${ws/#$HOME/~}/.gfbwt-ws"
+  if [ "$check" = true ]; then
+    _gfb_head "gfbwt ws check" "repo di ${ws/#$HOME/~} vs .gfbwt-ws"
+  else
+    _gfb_head "gfbwt ws config" "${ws/#$HOME/~}/.gfbwt-ws"
+  fi
   _gfb_note "base aktif = master/main/develop yang commit terakhirnya paling baru (origin)"
   _gfb_note "usang = base tertulis tertinggal > $GFBWT_STALE_DAYS hari dari base aktif (GFBWT_STALE_DAYS)"
   _gfb_note "alias? = usulan untuk repo baru (bisa diganti saat diterapkan)"
@@ -4948,6 +4958,26 @@ _gfbwt_ws_config() {
       "$([ "${sc_kind[k]}" = new ] && print -r -- "${sc_alias[k]}?" || print -r -- "${sc_alias[k]}")" \
       "${sc_repo[k]}" "${sc_cur[k]:--}" "${sc_new[k]:--}" "$st"
   done
+
+  if [ "$check" = true ]; then
+    local nn=${#${(M)sc_kind:#new}} nb=${#${(M)sc_kind:#(stale|empty|gone)}} nm=${#${(M)sc_kind:#missing}}
+    local nr=$(( ${#sc_kind} - nn ))
+    print
+    if (( nm )); then _gfb_kv "terdaftar" "$nr repo ${D}($nm foldernya tidak ada)${N}"
+    else _gfb_kv "terdaftar" "$nr repo"; fi
+    _gfb_kv "belum" "$nn repo git"
+    if (( nn + nb + nm == 0 )); then
+      _gfb_ok "Semua repo git di ${ws:t} sudah terbaca oleh .gfbwt-ws, base sesuai."
+      print
+      return 0
+    fi
+    (( nn )) && _gfb_warn "$nn repo git belum terdaftar ${D}(tidak terbaca oleh gfbwt ws add/serve)${N}"
+    (( nb )) && _gfb_warn "$nb repo base usang/kosong"
+    (( nm )) && _gfb_warn "$nm baris menunjuk folder yang tidak ada"
+    _gfb_hint "gfbwt ws config -a" "daftarkan / perbaiki (ditanya satu per satu)"
+    print
+    return 1
+  fi
 
   if (( nfix == 0 )); then
     print
