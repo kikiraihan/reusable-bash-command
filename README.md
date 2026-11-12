@@ -188,6 +188,89 @@ gfbwt ws migrate                           # pindahkan worktree lama <repo>.wt/.
 
 > Screenshot diambil dari repo demo (`api-gateway`, `web-dashboard`, `mobile-app`) dengan data commit contoh.
 
+**`gfbwt ws serve`** — repo utama ikut branch workspace, untuk testing di server lokal (Valet, nginx, Herd, dll.)
+yang menunjuk ke folder repo utama. Domain dan konfigurasi server tidak perlu diubah.
+
+```bash
+gfbwt ws serve                    # status: tiap repo utama sedang di branch apa + cek .env
+                                  #   (di dalam workspace → langsung ditawari pindah)
+gfbwt ws serve @                  # semua repo utama yang ada di workspace ini ← branch ini
+gfbwt ws serve @ api              # hanya repo api
+gfbwt ws serve web                # dari dalam workspace: sama dengan "@ web"
+gfbwt ws serve SP-900             # dari mana saja di workspace: pilih workspace dengan keyword
+gfbwt ws serve -n @               # dry-run, tampilkan rencana saja
+gfbwt ws serve -y @               # tanpa konfirmasi (stash, composer install, salin .env otomatis)
+gfbwt ws serve reset              # repo utama kembali ke branch asal sebelum serve
+gfbwt ws serve reset -b           # kembali ke base (.gfbwt-ws / origin/HEAD), bukan branch asal
+gfbwt ws serve reset all -bp      # semua repo utama ke base + git pull --ff-only
+```
+
+Contoh alur (workspace `kiki-feat-SP-900` berisi `api-gateway` (alias `api`) + `web-dashboard` (alias `web`),
+`api.test` dan `admin.test` di-`valet link` ke repo utama):
+
+```bash
+cd .wt/kiki-feat-SP-900/web-dashboard  # bebas dari repo mana pun di workspace
+gfbwt ws serve
+#   Repo utama
+#     api    ⎇ develop
+#     web    ⎇ master   ✎ 2 file
+#   Workspace ini
+#     api    kiki/feat/SP-900 @a1b2c3d
+#            ▲ 1 key ada di .env worktree, belum di .env utama: PAYMENT_SPLIT_URL
+#            ≠ 1 key beda nilai dengan worktree: DB_DATABASE
+#     web    kiki/feat/SP-900 @9f8e7d6
+#            ▲ 3 file belum di-commit di worktree — tidak ikut (commit, lalu serve lagi)
+#            ✓ .env sinkron
+#   ? Pindahkan repo utama (api, web) ke branch ini? [y/N] y
+#   ✔ api develop → kiki/feat/SP-900 @a1b2c3d
+#   ℹ api: 2 migration baru  → cd ~/…/api-gateway && php artisan migrate
+#   ? Salin 1 key dari .env worktree ke .env utama api? [Y/n]
+#   › web: 2 file di-stash (gfbwt-serve: master)
+#   ✔ web  master → kiki/feat/SP-900 @9f8e7d6
+
+# test di https://api.test & https://admin.test …
+# commit baru di worktree? status menampilkan "↻ N commit baru", jalankan lagi:
+gfbwt ws serve -y @
+
+# selesai: rollback migration fitur dulu (diingatkan otomatis), lalu kembalikan
+gfbwt ws serve reset              # api → develop, web → master + stash dikembalikan
+```
+
+- Git melarang satu branch terbuka di dua worktree, jadi repo utama di-checkout **detached** ke commit
+  branch itu. Hanya yang sudah di-commit yang ikut; commit baru → jalankan `serve` lagi.
+- Repo utama kotor → di-stash dulu, lalu dikembalikan (`stash pop`) saat `reset`.
+- Cek `.env`: key yang ada di `.env` worktree tapi belum di `.env` utama (ditawari salin),
+  key `.env.example` (versi branch) yang belum di-set di mana pun, key yang nilainya beda.
+- `composer.lock` / `package-lock.json` berubah → ditawari `composer install` / `npm ci`.
+  Migration baru → diingatkan `migrate`; saat `reset` diingatkan `migrate:rollback --step=N` dulu.
+- Laravel: `php artisan optimize:clear` otomatis setelah pindah.
+- `gfbwt ws rm` workspace yang sedang di-serve → repo utama otomatis di-reset dulu.
+- `gfbwt ws` menandai workspace yang sedang dipakai repo utama dengan `◉ serve: api, web`.
+- State tersimpan di `<induk>/.wt/.gfbwt-serve`.
+
+**`gfbrepos`** — dari folder induk, lihat branch aktif semua repo di bawahnya sekaligus
+
+```bash
+cd ~/projects        # folder induk berisi banyak repo
+gfbrepos             # semua repo (anak langsung): branch, status file, sinkron origin, commit terakhir
+gfbrepos payment     # filter nama folder / branch
+gfbrepos -w          # + semua worktree (.wt/<branch>/<repo>, <repo>.wt/<branch>)
+gfbrepos -d 2        # cari sampai 2 level folder
+```
+
+```
+  ◆ gfbrepos  5 repo di ~/projects
+
+    api-gateway     ◉ kiki/feat/SP-900   ✓ bersih   -          2 hours ago    ⎇2
+    web-dashboard   ◉ kiki/feat/SP-900   ✓ bersih   -          3 hours ago    ⎇1
+    mobile-app      develop              ✓ bersih   sinkron    6 months ago
+    docs-site       kiki/feat/SP-1257    ✎ 3 file   sinkron    7 months ago
+    legacy-service  master               ✓ bersih   ↓50        6 months ago
+```
+
+- Hijau = branch utama (`master/main/develop/...`), `◉` = repo utama sedang `gfbwt ws serve`,
+  `⎇N` = punya N worktree.
+
 ---
 
 ## Others
