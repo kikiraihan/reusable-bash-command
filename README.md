@@ -103,11 +103,12 @@ gfbcommits -o                 # hanya commit milik branch ini
 gfbcommits -m kiki/feat/SP-900  # branch lain, tanpa merge commit
 ```
 
-**`gfbshow`** — bedah satu commit: info & branch yang memuatnya, ringkasan AI (apa yang berubah + yang perlu diperhatikan), daftar file berubah (+/-), lalu di bagian bawah potongan baris yang berubah per file lengkap dengan nomor baris
+**`gfbshow`** — bedah satu commit: info & branch yang memuatnya, ringkasan AI (apa yang berubah + yang perlu diperhatikan), daftar file berubah (+/-), lalu di akhir ditanya apakah mau lihat potongan baris yang berubah per file (lengkap dengan nomor baris)
 
 ```bash
-gfbshow                       # commit terakhir (HEAD)
+gfbshow                       # commit terakhir (HEAD), di akhir ditanya: tampilkan baris berubah?
 gfbshow 56c97cde              # commit tertentu
+gfbshow 56c97cde -d           # langsung tampilkan semuanya, tanpa ditanya
 gfbshow HEAD~1 -x             # tanpa ringkasan AI
 gfbshow 56c97cde -f Services -a   # file Services saja, semua baris
 gfbshow 56c97cde -p gemini    # ringkasan via Gemini

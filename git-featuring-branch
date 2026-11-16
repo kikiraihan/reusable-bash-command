@@ -1065,32 +1065,37 @@ gfbcommits() {
 #   gfbshow 56c97cde           → commit tertentu
 #   gfbshow 56c97cde -x        → tanpa ringkasan AI
 #   gfbshow 56c97cde -f app/   → hanya file yang path-nya cocok
+#   gfbshow 56c97cde -d        → langsung tampilkan baris berubah (tanpa tanya)
+# Default: baris berubah ditanyakan dulu di akhir.
 # ════════════════════════════════════════════════════════════════════
 _gfbshow_usage() {
   _gfb_head "gfbshow" "bedah satu commit"
   _gfb_sec "Untuk apa"
   _gfb_text "Lihat isi satu commit secara lengkap: info commit & branch yang memuatnya,"
-  _gfb_text "ringkasan AI (apa & kenapa), daftar file berubah (+/-), dan di bagian bawah"
-  _gfb_text "potongan baris yang berubah per file beserta nomor barisnya."
+  _gfb_text "ringkasan AI (apa & kenapa), dan daftar file berubah (+/-). Di akhir ditanya"
+  _gfb_text "apakah mau lihat potongan baris yang berubah (lengkap dengan nomor baris)."
   _gfb_sec "Pemakaian"
-  _gfb_use "gfbshow [commit] [-x] [-f keyword] [-a] [-l baris] [-c konteks] [-p provider] [-m model]"
+  _gfb_use "gfbshow [commit] [-d] [-x] [-f keyword] [-a] [-l baris] [-c konteks] [-p provider] [-m model]"
   _gfb_note "default: commit = HEAD (@), AI = groq"
   _gfb_sec "Argumen"
   _gfb_opt "[commit]" "hash / ref (HEAD~2, nama branch); @ atau kosong = HEAD"
   _gfb_sec "Opsi"
+  _gfb_opt "-d, --diff" "langsung tampilkan baris berubah, tanpa ditanya"
   _gfb_opt "-x, --no-ai" "tanpa ringkasan AI"
   _gfb_opt "-f, --filter" "hanya file yang path-nya mengandung keyword"
-  _gfb_opt "-a, --all" "tampilkan semua baris berubah (default maks 40 per file)"
-  _gfb_opt "-l <baris>" "maks baris potongan per file, default 40"
-  _gfb_opt "-c <konteks>" "baris konteks di sekitar perubahan, default 2"
+  _gfb_opt "-a, --all" "semua baris berubah (default maks 40 per file); termasuk -d"
+  _gfb_opt "-l <baris>" "maks baris potongan per file, default 40; termasuk -d"
+  _gfb_opt "-c <konteks>" "baris konteks di sekitar perubahan, default 2; termasuk -d"
   _gfb_opt "-p, -m" "provider (groq/gemini) & model AI"
   _gfb_opt "-h, --help" "bantuan ini"
   _gfb_sec "Isi"
-  _gfb_note "info commit → ringkasan AI → file berubah (+/-) → potongan baris berubah."
+  _gfb_note "info commit → ringkasan AI → file berubah (+/-) → tanya: potongan baris berubah?"
+  _gfb_note "Enter = ya. Kalau output bukan terminal, tidak ditanya (pakai -d)."
   _gfb_note "Merge commit dibandingkan dengan parent pertama (isi yang dibawa merge)."
   _gfb_sec "Contoh"
   _gfb_ex "gfbshow" "commit terakhir"
   _gfb_ex "gfbshow 56c97cde" "commit tertentu"
+  _gfb_ex "gfbshow 56c97cde -d" "langsung semua, tanpa tanya"
   _gfb_ex "gfbshow HEAD~1 -x" "tanpa AI"
   _gfb_ex "gfbshow 56c97cde -f Services -a" "file Services saja, semua baris"
   _gfb_ex "gfbshow 56c97cde -p gemini" "ringkasan via Gemini"
@@ -1150,16 +1155,17 @@ ${diff:-none}"
 }
 
 gfbshow() {
-  local commit="" use_ai=true filter="" max_lines=40 ctx=2 provider="groq" model=""
+  local commit="" use_ai=true show_diff=false filter="" max_lines=40 ctx=2 provider="groq" model=""
 
   while [[ "$#" -gt 0 ]]; do
     case $1 in
       -h|--help) _gfbshow_usage; return 0 ;;
+      -d|--diff) show_diff=true ;;
       -x|--no-ai) use_ai=false ;;
       -f|--filter) filter="$2"; shift ;;
-      -a|--all) max_lines=0 ;;
-      -l) max_lines="$2"; shift ;;
-      -c) ctx="$2"; shift ;;
+      -a|--all) max_lines=0; show_diff=true ;;
+      -l) max_lines="$2"; show_diff=true; shift ;;
+      -c) ctx="$2"; show_diff=true; shift ;;
       -p|--provider) provider="$2"; shift ;;
       -m|--model) model="$2"; shift ;;
       -*) _gfb_bad gfbshow "Flag tidak dikenal: $1"; return 1 ;;
@@ -1290,7 +1296,18 @@ gfbshow() {
   print
   print -r -- "    ${D}${(j: · :)parts}${N}"
 
-  # ── Potongan baris yang berubah ──
+  # ── Potongan baris yang berubah: -d langsung, selain itu tanya dulu ──
+  if [ "$show_diff" != true ]; then
+    if [[ -t 0 && -t 1 ]] && _gfb_confirm "Tampilkan baris yang berubah?" y; then
+      show_diff=true
+    else
+      [[ -t 0 && -t 1 ]] || { print; _gfb_hint "gfbshow ${sha[1,9]} -d" "tampilkan baris yang berubah"; }
+      builtin cd -q "$__gfb_here"
+      print
+      return 0
+    fi
+  fi
+
   local width=$(( ${COLUMNS:-160} - 16 ))
   (( width < 60 )) && width=60
   if (( max_lines )); then
