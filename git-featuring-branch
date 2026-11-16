@@ -1059,26 +1059,29 @@ gfbcommits() {
 }
 
 # ════════════════════════════════════════════════════════════════════
-# gfbshow — bedah satu commit: info, ringkasan AI, file berubah,
-# lalu potongan baris yang berubah (lengkap dengan nomor baris)
-#   gfbshow                    → commit terakhir (HEAD)
-#   gfbshow 56c97cde           → commit tertentu
-#   gfbshow 56c97cde -x        → tanpa ringkasan AI
-#   gfbshow 56c97cde -f app/   → hanya file yang path-nya cocok
-#   gfbshow 56c97cde -d        → langsung tampilkan baris berubah (tanpa tanya)
-# Default: baris berubah ditanyakan dulu di akhir.
+# gfbshow — bedah commit: info, ringkasan AI, file berubah, lalu
+# (ditanya dulu) potongan baris yang berubah lengkap dengan nomor baris
+#   gfbshow                      → commit terakhir (HEAD)
+#   gfbshow 56c97cde             → satu commit
+#   gfbshow 011ed31-7d8eff1      → range inklusif, diff gabungan (juga a..b)
+#   gfbshow 011ed31, 735998e     → pilih beberapa commit, baris per commit
+#   gfbshow 56c97cde -d          → langsung tampilkan baris berubah
+#   gfbshow 56c97cde -x          → tanpa ringkasan AI
+#   gfbshow 56c97cde -f app/     → hanya file yang path-nya cocok
 # ════════════════════════════════════════════════════════════════════
 _gfbshow_usage() {
-  _gfb_head "gfbshow" "bedah satu commit"
+  _gfb_head "gfbshow" "bedah commit"
   _gfb_sec "Untuk apa"
-  _gfb_text "Lihat isi satu commit secara lengkap: info commit & branch yang memuatnya,"
-  _gfb_text "ringkasan AI (apa & kenapa), dan daftar file berubah (+/-). Di akhir ditanya"
-  _gfb_text "apakah mau lihat potongan baris yang berubah (lengkap dengan nomor baris)."
+  _gfb_text "Lihat isi satu / beberapa commit: info & branch yang memuatnya, ringkasan AI"
+  _gfb_text "(apa & kenapa), dan daftar file berubah (+/-). Di akhir ditanya apakah mau"
+  _gfb_text "lihat potongan baris yang berubah (lengkap dengan nomor baris)."
   _gfb_sec "Pemakaian"
-  _gfb_use "gfbshow [commit] [-d] [-x] [-f keyword] [-a] [-l baris] [-c konteks] [-p provider] [-m model]"
-  _gfb_note "default: commit = HEAD (@), AI = groq"
+  _gfb_use "gfbshow [commit...] [-d] [-x] [-f keyword] [-a] [-l baris] [-c konteks] [-p provider] [-m model]"
+  _gfb_note "default: commit = HEAD (@), AI = groq, baris berubah ditanya dulu (Enter = tidak)"
   _gfb_sec "Argumen"
-  _gfb_opt "[commit]" "hash / ref (HEAD~2, nama branch); @ atau kosong = HEAD"
+  _gfb_opt "<commit>" "hash / ref (HEAD~2, nama branch); @ atau kosong = HEAD"
+  _gfb_opt "<a>-<b>, <a>..<b>" "range dari a sampai b (inklusif), diff gabungan"
+  _gfb_opt "<a>, <b> ..." "pilih beberapa commit (koma / spasi), baris per commit"
   _gfb_sec "Opsi"
   _gfb_opt "-d, --diff" "langsung tampilkan baris berubah, tanpa ditanya"
   _gfb_opt "-x, --no-ai" "tanpa ringkasan AI"
@@ -1089,23 +1092,68 @@ _gfbshow_usage() {
   _gfb_opt "-p, -m" "provider (groq/gemini) & model AI"
   _gfb_opt "-h, --help" "bantuan ini"
   _gfb_sec "Isi"
-  _gfb_note "info commit → ringkasan AI → file berubah (+/-) → tanya: potongan baris berubah?"
-  _gfb_note "Enter = tidak. Kalau output bukan terminal, tidak ditanya (pakai -d)."
+  _gfb_note "info → daftar commit (kalau >1) → ringkasan AI → file berubah (+/-) → tanya: baris berubah?"
+  _gfb_note "Range: urutan a/b bebas, harus satu garis keturunan; merge di dalamnya ikut."
   _gfb_note "Merge commit dibandingkan dengan parent pertama (isi yang dibawa merge)."
+  _gfb_note "Kalau output bukan terminal, tidak ditanya (pakai -d)."
   _gfb_sec "Contoh"
   _gfb_ex "gfbshow" "commit terakhir"
-  _gfb_ex "gfbshow 56c97cde" "commit tertentu"
   _gfb_ex "gfbshow 56c97cde -d" "langsung semua, tanpa tanya"
+  _gfb_ex "gfbshow 011ed31-7d8eff1" "range, diff gabungan"
+  _gfb_ex "gfbshow 011ed31, 735998e" "pilih 2 commit"
   _gfb_ex "gfbshow HEAD~1 -x" "tanpa AI"
   _gfb_ex "gfbshow 56c97cde -f Services -a" "file Services saja, semua baris"
   _gfb_ex "gfbshow 56c97cde -p gemini" "ringkasan via Gemini"
   print
 }
 
-# Ringkasan AI untuk satu commit: _gfb_show_ai <provider> <model> <commit> <left> [pathspec...]
+# Ubah satu token jadi daftar sha (lama → baru). "a-b" / "a..b" = range inklusif.
+_gfb_show_resolve() {
+  local tok=$1 a="" b="" is_range=false
+  local re_hex='^[0-9a-fA-F]{4,40}-[0-9a-fA-F]{4,40}$'
+  [[ $tok == @ || $tok == . ]] && tok=HEAD
+  if [[ $tok == *..* ]]; then
+    a=${tok%%..*} b=${tok#*..} is_range=true
+  elif [[ $tok =~ $re_hex ]]; then
+    a=${tok%-*} b=${tok#*-} is_range=true
+  fi
+  if [ "$is_range" = false ]; then
+    git rev-parse --verify -q "$tok^{commit}" && return 0
+    _gfb_err "Commit '$tok' tidak ditemukan di repo ini."
+    return 1
+  fi
+  [[ -z $a || $a == @ ]] && a=HEAD
+  [[ -z $b || $b == @ ]] && b=HEAD
+  local x sa sb
+  for x in "$a" "$b"; do
+    git rev-parse --verify -q "$x^{commit}" >/dev/null && continue
+    _gfb_err "Commit '$x' (dari range '$tok') tidak ditemukan di repo ini."
+    return 1
+  done
+  sa=$(git rev-parse "$a^{commit}") sb=$(git rev-parse "$b^{commit}")
+  if [ "$sa" = "$sb" ]; then print -r -- "$sa"; return 0; fi
+  if ! git merge-base --is-ancestor "$sa" "$sb"; then
+    if git merge-base --is-ancestor "$sb" "$sa"; then
+      x=$sa; sa=$sb; sb=$x               # urutan dibalik otomatis
+    else
+      _gfb_err "Range '$tok': kedua commit tidak satu garis keturunan."
+      _gfb_note "Pakai koma untuk memilih commit satu per satu: gfbshow $a, $b" >&2
+      return 1
+    fi
+  fi
+  print -r -- "$sa"
+  git rev-list --reverse "$sb" "^$sa"
+}
+
+# Ringkasan AI. _gfb_show_ai <provider> <model> <jenis> <info-commit> <left right>... -- [pathspec...]
+#   jenis: single | range | picks
 _gfb_show_ai() {
-  local provider="$1" model="$2" commit="$3" left="$4"; shift 4
+  local provider="$1" model="$2" kind="$3" info="$4"; shift 4
   local max_diff_chars=12000
+  local -a pairs=() paths=()
+  while (( $# )) && [[ $1 != -- ]]; do pairs+=("$1"); shift; done
+  [[ $1 == -- ]] && shift
+  paths=("$@")
 
   _gfb_sec "Ringkasan AI" "$provider · $model"
   if ! _gfb_ai_key "$provider" quiet; then
@@ -1116,17 +1164,25 @@ _gfb_show_ai() {
 
   local -a noisy=(':(top,exclude)*.lock' ':(top,exclude)*package-lock.json' ':(top,exclude)*pnpm-lock.yaml'
                   ':(top,exclude)*.min.js' ':(top,exclude)*.min.css')
-  local msg=$(git log -1 --format='%B' "$commit")
-  local meta=$(git log -1 --format='%h | %ad | %an' --date=format:'%Y-%m-%d %H:%M' "$commit")
-  local stat=$(git diff --stat=120 -M "$left" "$commit" -- "$@" 2>/dev/null)
-  local diff=$(git diff --no-color -M -U2 "$left" "$commit" -- "${@:-:/}" "${noisy[@]}" 2>/dev/null)
+  local pr l r stat="" diff="" one
+  for pr in "${pairs[@]}"; do
+    l=${pr% *} r=${pr#* }
+    [ "$kind" = picks ] && { stat+="## $(git log -1 --format='%h %s' "$r")"$'\n'; diff+="### commit $(git log -1 --format='%h %s' "$r")"$'\n'; }
+    stat+=$(git diff --stat=120 -M "$l" "$r" -- "${paths[@]}" 2>/dev/null)$'\n'
+    one=$(git diff --no-color -M -U2 "$l" "$r" -- "${paths[@]:-:/}" "${noisy[@]}" 2>/dev/null)
+    diff+="$one"$'\n'
+  done
   (( ${#diff} > max_diff_chars )) && diff="${diff[1,$max_diff_chars]}"$'\n'"... (diff truncated)"
 
-  local prompt="You review a single git commit for a developer.
-Write a short explanation IN INDONESIAN (casual but clear) of what this commit does.
+  local what="a single git commit"
+  [ "$kind" = range ] && what="a range of consecutive git commits (the diff is the combined net change of the whole range)"
+  [ "$kind" = picks ] && what="several selected git commits (diff is given per commit)"
+
+  local prompt="You review $what for a developer.
+Write a short explanation IN INDONESIAN (casual but clear) of what this does.
 
 Format exactly like this (plain text, no markdown headers, no code fences):
-📝 Ringkasan: <1–2 sentences: what changed and why, inferred from message and diff>
+📝 Ringkasan: <1–2 sentences: what changed and why, inferred from messages and diff>
 🔧 Perubahan utama:
 - <key change, mention file/function/class names; max 5 bullets>
 ⚠️ Perlu diperhatikan:
@@ -1137,9 +1193,8 @@ Rules:
 - Describe behavior/intent, do not just list file names.
 - If something is uncertain, say \"kemungkinan\". Do not invent things not in the diff.
 
-Commit: $meta
-Message:
-$msg
+Commits:
+$info
 
 Diffstat:
 ${stat:-none}
@@ -1154,170 +1209,15 @@ ${diff:-none}"
   print -r -- "$result" | sed 's/^/    /'
 }
 
-gfbshow() {
-  local commit="" use_ai=true show_diff=false filter="" max_lines=40 ctx=2 provider="groq" model=""
-
-  while [[ "$#" -gt 0 ]]; do
-    case $1 in
-      -h|--help) _gfbshow_usage; return 0 ;;
-      -d|--diff) show_diff=true ;;
-      -x|--no-ai) use_ai=false ;;
-      -f|--filter) filter="$2"; shift ;;
-      -a|--all) max_lines=0; show_diff=true ;;
-      -l) max_lines="$2"; show_diff=true; shift ;;
-      -c) ctx="$2"; show_diff=true; shift ;;
-      -p|--provider) provider="$2"; shift ;;
-      -m|--model) model="$2"; shift ;;
-      -*) _gfb_bad gfbshow "Flag tidak dikenal: $1"; return 1 ;;
-      *) [ -z "$commit" ] && commit="$1" ;;
-    esac
-    shift
-  done
-
-  if [[ "$max_lines" != <-> || "$ctx" != <-> ]]; then
-    _gfb_bad gfbshow "-l dan -c harus angka."
-    return 1
-  fi
-  _gfb_repo || return 1
-  [[ -z "$commit" || "$commit" == "@" || "$commit" == "." ]] && commit=HEAD
-  if ! git rev-parse --verify -q "$commit^{commit}" >/dev/null; then
-    _gfb_err "Commit '$commit' tidak ditemukan di repo ini."
-    return 1
-  fi
-  if [ "$use_ai" = true ] && [ -z "$model" ]; then
-    model=$(_gfb_ai_model "$provider") || return 1
-  fi
-
+# Potongan baris berubah dengan nomor baris. _gfb_show_hunks <left> <right> <konteks> <maks> [pathspec...]
+_gfb_show_hunks() {
   local B D N G R Y C M; _gfb_pal
-  local sha=$(git rev-parse "$commit^{commit}")
-  local -a parents=(${=$(git log -1 --format=%P "$sha")})
-
-  # Pembanding: parent pertama; root commit → tree kosong
-  local left
-  if (( ${#parents} )); then
-    left=${parents[1]}
-  else
-    left=$(git hash-object -t tree /dev/null)
-  fi
-
-  # Path relatif ke root repo supaya filter & pathspec konsisten dari subfolder
-  local __gfb_here=$PWD
-  builtin cd -q "$(git rev-parse --show-toplevel)" || return 1
-
-  # ── File berubah (name-status + numstat, urutannya sama) ──
-  local -a ns=(${(f)"$(git diff --name-status -M "$left" "$sha")"})
-  local -a nums=(${(f)"$(git diff --numstat -M "$left" "$sha")"})
-  local -a paths=() rows=()
-  local i row st f a d tot_a=0 tot_d=0
-  local -A cnt
-  for (( i = 1; i <= ${#ns}; i++ )); do
-    row=${ns[i]}
-    st=${row[1]}
-    f=${row#*$'\t'}
-    [ -n "$filter" ] && [[ "$f" != *"$filter"* ]] && continue
-    paths+=("${f##*$'\t'}")
-    [[ $st == R || $st == C ]] && paths+=("${f%%$'\t'*}")
-    a=${${nums[i]}%%$'\t'*}
-    d=${${nums[i]#*$'\t'}%%$'\t'*}
-    rows+=("$st"$'\t'"${f//$'\t'/ → }"$'\t'"$a"$'\t'"$d")
-    [[ $a == <-> ]] && (( tot_a += a ))
-    [[ $d == <-> ]] && (( tot_d += d ))
-    cnt[$st]=$(( ${cnt[$st]:-0} + 1 ))
-  done
-
-  # ── Info commit ──
-  _gfb_head "gfbshow" "bedah satu commit"
-  _gfb_kv "commit" "$(git log -1 --format="${Y}%h${N} %s" "$sha")"
-  _gfb_kv "author" "$(git log -1 --format="%an ${D}<%ae>${N}" "$sha")"
-  _gfb_kv "waktu" "$(git log -1 --format="%ad ${D}· %cr${N}" --date=format:'%Y-%m-%d %H:%M' "$sha")"
-  if (( ${#parents} > 1 )); then
-    _gfb_kv "parent" "${C}merge${N} $(git rev-parse --short ${parents[1]}) + $(git rev-parse --short ${parents[2]}) ${D}(dibanding parent pertama)${N}"
-  elif (( ${#parents} == 1 )); then
-    _gfb_kv "parent" "$(git rev-parse --short ${parents[1]})"
-  else
-    _gfb_kv "parent" "${D}root commit${N}"
-  fi
-  local -a br=(${(f)"$(git for-each-ref --contains "$sha" --format='%(refname:short)' refs/heads 2>/dev/null)"})
-  if (( ${#br} )); then
-    local brtxt="${(j:, :)br[1,4]}"
-    (( ${#br} > 4 )) && brtxt+=" ${D}+$(( ${#br} - 4 )) lagi (gfbfind ${sha[1,9]})${N}"
-    _gfb_kv "branch" "$brtxt"
-  else
-    _gfb_kv "branch" "${D}tidak ada branch lokal (gfbfind ${sha[1,9]} -r)${N}"
-  fi
-  [ -n "$filter" ] && _gfb_kv "filter" "$filter"
-
-  local body=$(git log -1 --format=%b "$sha" | sed '/^[[:space:]]*$/d')
-  if [ -n "$body" ]; then
-    _gfb_sec "Pesan"
-    print -r -- "$body" | head -n 15 | sed "s/^/    ${D}/; s/\$/${N}/"
-  fi
-
-  # ── Ringkasan AI ──
-  if [ "$use_ai" = true ] && (( ${#rows} )); then
-    if (( ${#paths} )) && [ -n "$filter" ]; then
-      _gfb_show_ai "$provider" "$model" "$sha" "$left" "${paths[@]}"
-    else
-      _gfb_show_ai "$provider" "$model" "$sha" "$left"
-    fi
-  fi
-
-  if (( ${#rows} == 0 )); then
-    print
-    _gfb_ok "Tidak ada file berubah${filter:+ yang cocok dengan '$filter'}."
-    builtin cd -q "$__gfb_here"
-    print
-    return 0
-  fi
-
-  # ── File berubah ──
-  _gfb_sec "File berubah" "${#rows} file · ${G}+$tot_a${N} ${R}-$tot_d${N}"
-  local color fa fd label
-  local -A lbl
-  lbl=(M diubah A baru D dihapus R rename C copy T tipe)
-  for row in "${rows[@]}"; do
-    st=${row%%$'\t'*}; row=${row#*$'\t'}
-    f=${row%%$'\t'*};  row=${row#*$'\t'}
-    a=${row%%$'\t'*};  d=${row#*$'\t'}
-    case $st in
-      A) color=$G ;; D) color=$R ;; R|C) color=$C ;; M) color=$Y ;; *) color=$D ;;
-    esac
-    if [[ $a == - ]]; then
-      fa="${D}binary${N}"
-    else
-      fa="${G}+$a${N} ${R}-$d${N}"
-    fi
-    print -r -- "    ${color}${st}${N}  $f  $fa"
-  done
-  local -a parts=()
-  for st in M A D R C T; do
-    (( ${cnt[$st]:-0} )) && parts+=("${cnt[$st]} ${lbl[$st]}")
-  done
-  print
-  print -r -- "    ${D}${(j: · :)parts}${N}"
-
-  # ── Potongan baris yang berubah: -d langsung, selain itu tanya dulu ──
-  if [ "$show_diff" != true ]; then
-    if [[ -t 0 && -t 1 ]] && _gfb_confirm "Tampilkan baris yang berubah?" n; then
-      show_diff=true
-    else
-      [[ -t 0 && -t 1 ]] || { print; _gfb_hint "gfbshow ${sha[1,9]} -d" "tampilkan baris yang berubah"; }
-      builtin cd -q "$__gfb_here"
-      print
-      return 0
-    fi
-  fi
-
+  local l=$1 r=$2 ctx=$3 max=$4; shift 4
   local width=$(( ${COLUMNS:-160} - 16 ))
   (( width < 60 )) && width=60
-  if (( max_lines )); then
-    _gfb_sec "Baris berubah" "maks $max_lines baris/file · konteks $ctx · -a semua"
-  else
-    _gfb_sec "Baris berubah" "semua baris · konteks $ctx"
-  fi
-  git diff --no-color -M -U"$ctx" "$left" "$sha" -- "${paths[@]}" 2>/dev/null | \
-    awk -v G="$G" -v R="$R" -v D="$D" -v N="$N" -v C="$C" -v B="$B" -v Y="$Y" \
-        -v max="$max_lines" -v W="$width" '
+  git diff --no-color -M -U"$ctx" "$l" "$r" -- "$@" 2>/dev/null | \
+    awk -v G="$G" -v R="$R" -v D="$D" -v N="$N" -v C="$C" -v B="$B" \
+        -v max="$max" -v W="$width" '
     function flush() {
       if (name != "" && !titled) { title(); printf "      %s(tanpa perubahan isi: rename / mode)%s\n", D, N }
       if (hidden > 0) printf "      %s… %d baris lagi (pakai -a untuk semua)%s\n", D, hidden, N
@@ -1366,6 +1266,240 @@ gfbshow() {
     /^\\/ { out(sprintf("          %s%s%s", D, $0, N)); next }
     END { flush() }
   '
+}
+
+# Parent pertama sebuah commit; root commit → tree kosong
+_gfb_parent1() {
+  local p=$(git rev-parse -q --verify "$1^1" 2>/dev/null)
+  print -r -- "${p:-$(git hash-object -t tree /dev/null)}"
+}
+
+gfbshow() {
+  local use_ai=true show_diff=false filter="" max_lines=40 ctx=2 provider="groq" model=""
+  local -a tokens=()
+
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbshow_usage; return 0 ;;
+      -d|--diff) show_diff=true ;;
+      -x|--no-ai) use_ai=false ;;
+      -f|--filter) filter="$2"; shift ;;
+      -a|--all) max_lines=0; show_diff=true ;;
+      -l) max_lines="$2"; show_diff=true; shift ;;
+      -c) ctx="$2"; show_diff=true; shift ;;
+      -p|--provider) provider="$2"; shift ;;
+      -m|--model) model="$2"; shift ;;
+      -*) _gfb_bad gfbshow "Flag tidak dikenal: $1"; return 1 ;;
+      *) tokens+=(${(s:,:)1}) ;;         # "a, b" / "a,b" → beberapa commit
+    esac
+    shift
+  done
+
+  if [[ "$max_lines" != <-> || "$ctx" != <-> ]]; then
+    _gfb_bad gfbshow "-l dan -c harus angka."
+    return 1
+  fi
+  _gfb_repo || return 1
+  (( ${#tokens} )) || tokens=(HEAD)
+
+  # ── Kumpulkan commit (lama → baru, tanpa duplikat) ──
+  local -a shas=() got
+  local -A seen
+  local tok out s
+  for tok in "${tokens[@]}"; do
+    out=$(_gfb_show_resolve "$tok") || return 1
+    got=(${(f)out})
+    for s in "${got[@]}"; do
+      (( ${+seen[$s]} )) && continue
+      seen[$s]=1; shas+=("$s")
+    done
+  done
+
+  local kind=single
+  if (( ${#shas} > 1 )); then
+    if (( ${#tokens} == 1 )); then
+      kind=range
+    else
+      kind=picks
+      shas=(${(Oa)${(f)"$(git rev-list --no-walk=sorted "${shas[@]}")"}})   # urut waktu, lama → baru
+    fi
+  fi
+  if [ "$use_ai" = true ] && [ -z "$model" ]; then
+    model=$(_gfb_ai_model "$provider") || return 1
+  fi
+
+  local B D N G R Y C M; _gfb_pal
+
+  # Pasangan diff "left right": single/range = 1 pasangan, picks = per commit
+  local -a pairs=()
+  case $kind in
+    single) pairs=("$(_gfb_parent1 ${shas[1]}) ${shas[1]}") ;;
+    range)  pairs=("$(_gfb_parent1 ${shas[1]}) ${shas[-1]}") ;;
+    picks)  for s in "${shas[@]}"; do pairs+=("$(_gfb_parent1 $s) $s"); done ;;
+  esac
+
+  local __gfb_here=$PWD
+  builtin cd -q "$(git rev-parse --show-toplevel)" || return 1
+
+  # ── File berubah, digabung lintas pasangan (urut lama → baru) ──
+  local -a order=() paths=() ns nums
+  local -A f_st f_a f_d f_n f_bin
+  local pr l r i row st f a d key
+  local tot_a=0 tot_d=0
+  for pr in "${pairs[@]}"; do
+    l=${pr% *} r=${pr#* }
+    ns=(${(f)"$(git diff --name-status -M "$l" "$r")"})
+    nums=(${(f)"$(git diff --numstat -M "$l" "$r")"})
+    for (( i = 1; i <= ${#ns}; i++ )); do
+      row=${ns[i]}
+      st=${row[1]}
+      f=${row#*$'\t'}
+      [ -n "$filter" ] && [[ "$f" != *"$filter"* ]] && continue
+      paths+=("${f##*$'\t'}")
+      [[ $st == R || $st == C ]] && paths+=("${f%%$'\t'*}")
+      key=${f//$'\t'/ → }
+      (( ${+f_st[$key]} )) || order+=("$key")
+      a=${${nums[i]}%%$'\t'*}
+      d=${${nums[i]#*$'\t'}%%$'\t'*}
+      f_st[$key]=$st
+      f_n[$key]=$(( ${f_n[$key]:-0} + 1 ))
+      if [[ $a == <-> ]]; then
+        f_a[$key]=$(( ${f_a[$key]:-0} + a )); f_d[$key]=$(( ${f_d[$key]:-0} + d ))
+        (( tot_a += a, tot_d += d ))
+      else
+        f_bin[$key]=1
+      fi
+    done
+  done
+  paths=(${(u)paths})
+  local -a spec=()                     # pathspec hanya kalau pakai filter
+  [ -n "$filter" ] && spec=("${paths[@]}")
+
+  # ── Info ──
+  local first=${shas[1]} last=${shas[-1]}
+  if [ "$kind" = single ]; then
+    local -a parents=(${=$(git log -1 --format=%P "$first")})
+    _gfb_head "gfbshow" "bedah satu commit"
+    _gfb_kv "commit" "$(git log -1 --format="${Y}%h${N} %s" "$first")"
+    _gfb_kv "author" "$(git log -1 --format="%an ${D}<%ae>${N}" "$first")"
+    _gfb_kv "waktu" "$(git log -1 --format="%ad ${D}· %cr${N}" --date=format:'%Y-%m-%d %H:%M' "$first")"
+    if (( ${#parents} > 1 )); then
+      _gfb_kv "parent" "${C}merge${N} $(git rev-parse --short ${parents[1]}) + $(git rev-parse --short ${parents[2]}) ${D}(dibanding parent pertama)${N}"
+    elif (( ${#parents} == 1 )); then
+      _gfb_kv "parent" "$(git rev-parse --short ${parents[1]})"
+    else
+      _gfb_kv "parent" "${D}root commit${N}"
+    fi
+  else
+    _gfb_head "gfbshow" "bedah ${#shas} commit"
+    if [ "$kind" = range ]; then
+      _gfb_kv "range" "${Y}$(git rev-parse --short "$first")${N} → ${Y}$(git rev-parse --short "$last")${N} ${D}· ${#shas} commit · diff gabungan${N}"
+    else
+      _gfb_kv "pilih" "${#shas} commit ${D}· file digabung, baris per commit${N}"
+    fi
+    local -a authors=(${(fu)"$(git log --no-walk --format=%an "${shas[@]}")"})
+    _gfb_kv "author" "${(j:, :)authors}"
+    _gfb_kv "waktu" "$(git log -1 --format=%ad --date=format:'%Y-%m-%d %H:%M' "$first") → $(git log -1 --format="%ad ${D}· %cr${N}" --date=format:'%Y-%m-%d %H:%M' "$last")"
+  fi
+
+  # Branch yang memuat SEMUA commit
+  local -a br=(${(f)"$(git for-each-ref --contains "$last" --format='%(refname:short)' refs/heads 2>/dev/null)"})
+  if [ "$kind" = picks ]; then
+    local -a br2
+    for s in "${shas[@]}"; do
+      br2=(${(f)"$(git for-each-ref --contains "$s" --format='%(refname:short)' refs/heads 2>/dev/null)"})
+      br=(${br:*br2})
+    done
+  fi
+  local short=$(git rev-parse --short=9 "$last")
+  if (( ${#br} )); then
+    local brtxt="${(j:, :)br[1,4]}"
+    (( ${#br} > 4 )) && brtxt+=" ${D}+$(( ${#br} - 4 )) lagi (gfbfind $short)${N}"
+    _gfb_kv "branch" "$brtxt"
+  else
+    _gfb_kv "branch" "${D}tidak ada branch lokal yang memuat semuanya (gfbfind $short -r)${N}"
+  fi
+  [ -n "$filter" ] && _gfb_kv "filter" "$filter"
+
+  if [ "$kind" = single ]; then
+    local body=$(git log -1 --format=%b "$first" | sed '/^[[:space:]]*$/d')
+    if [ -n "$body" ]; then
+      _gfb_sec "Pesan"
+      print -r -- "$body" | head -n 15 | sed "s/^/    ${D}/; s/\$/${N}/"
+    fi
+  else
+    local max_list=30
+    _gfb_sec "Commit" "${#shas}"
+    _gfb_commits --no-walk=sorted "${shas[@]}" | head -n $max_list
+    (( ${#shas} > max_list )) && _gfb_note "… $(( ${#shas} - max_list )) commit lagi"
+  fi
+
+  # ── Ringkasan AI ──
+  if [ "$use_ai" = true ] && (( ${#order} )); then
+    local info=$(git log --no-walk=sorted --format='%h | %ad | %an | %s%n%b' --date=format:'%Y-%m-%d %H:%M' "${shas[@]}" | sed '/^[[:space:]]*$/d' | head -n 120)
+    _gfb_show_ai "$provider" "$model" "$kind" "$info" "${pairs[@]}" -- "${spec[@]}"
+  fi
+
+  if (( ${#order} == 0 )); then
+    print
+    _gfb_ok "Tidak ada file berubah${filter:+ yang cocok dengan '$filter'}."
+    builtin cd -q "$__gfb_here"
+    print
+    return 0
+  fi
+
+  # ── File berubah ──
+  _gfb_sec "File berubah" "${#order} file · ${G}+$tot_a${N} ${R}-$tot_d${N}"
+  local color fa
+  local -A cnt lbl
+  lbl=(M diubah A baru D dihapus R rename C copy T tipe)
+  for key in "${order[@]}"; do
+    st=${f_st[$key]}
+    case $st in
+      A) color=$G ;; D) color=$R ;; R|C) color=$C ;; M) color=$Y ;; *) color=$D ;;
+    esac
+    if (( ${+f_bin[$key]} )); then
+      fa="${D}binary${N}"
+    else
+      fa="${G}+${f_a[$key]:-0}${N} ${R}-${f_d[$key]:-0}${N}"
+    fi
+    (( ${f_n[$key]} > 1 )) && fa+=" ${D}· ${f_n[$key]} commit${N}"
+    cnt[$st]=$(( ${cnt[$st]:-0} + 1 ))
+    print -r -- "    ${color}${st}${N}  $key  $fa"
+  done
+  local -a parts=()
+  for st in M A D R C T; do
+    (( ${cnt[$st]:-0} )) && parts+=("${cnt[$st]} ${lbl[$st]}")
+  done
+  print
+  print -r -- "    ${D}${(j: · :)parts}${N}"
+
+  # ── Potongan baris yang berubah: -d langsung, selain itu tanya dulu ──
+  if [ "$show_diff" != true ]; then
+    if [[ -t 0 && -t 1 ]] && _gfb_confirm "Tampilkan baris yang berubah?" n; then
+      show_diff=true
+    else
+      [[ -t 0 && -t 1 ]] || { print; _gfb_hint "gfbshow ${(j:, :)tokens} -d" "tampilkan baris yang berubah"; }
+      builtin cd -q "$__gfb_here"
+      print
+      return 0
+    fi
+  fi
+
+  if (( max_lines )); then
+    _gfb_sec "Baris berubah" "maks $max_lines baris/file · konteks $ctx · -a semua"
+  else
+    _gfb_sec "Baris berubah" "semua baris · konteks $ctx"
+  fi
+  for pr in "${pairs[@]}"; do
+    l=${pr% *} r=${pr#* }
+    if [ "$kind" = picks ]; then
+      [ -z "$(git diff --name-only "$l" "$r" -- "${spec[@]}")" ] && continue
+      print
+      print -r -- "  ${C}━━${N} $(git log -1 --format="${Y}%h${N} %s ${D}· %cr${N}" "$r")"
+    fi
+    _gfb_show_hunks "$l" "$r" "$ctx" "$max_lines" "${spec[@]}"
+  done
 
   builtin cd -q "$__gfb_here"
   print
@@ -6298,7 +6432,7 @@ gfbmain() {
   _gfb_opt "gfbstatus"    "git status versi lengkap (+ recap AI)"
   _gfb_opt "gfblog"       "commit yang belum ada di base"
   _gfb_opt "gfbcommits"   "commit branch + asal: branch ini / branch lain / base"
-  _gfb_opt "gfbshow"      "bedah satu commit: ringkasan AI, file, baris berubah"
+  _gfb_opt "gfbshow"      "bedah commit (satu / range / pilih): AI, file, baris"
   _gfb_opt "gfbcompare"   "bandingkan dua branch"
   _gfb_opt "gfbrange"     "commit & file di antara dua hash"
   _gfb_opt "gfbfind"      "commit ada di branch mana saja"
