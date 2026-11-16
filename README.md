@@ -103,6 +103,16 @@ gfbcommits -o                 # hanya commit milik branch ini
 gfbcommits -m kiki/feat/SP-900  # branch lain, tanpa merge commit
 ```
 
+**`gfbshow`** — bedah satu commit: info & branch yang memuatnya, ringkasan AI (apa yang berubah + yang perlu diperhatikan), daftar file berubah (+/-), lalu di bagian bawah potongan baris yang berubah per file lengkap dengan nomor baris
+
+```bash
+gfbshow                       # commit terakhir (HEAD)
+gfbshow 56c97cde              # commit tertentu
+gfbshow HEAD~1 -x             # tanpa ringkasan AI
+gfbshow 56c97cde -f Services -a   # file Services saja, semua baris
+gfbshow 56c97cde -p gemini    # ringkasan via Gemini
+```
+
 **`gfbcompare main feature/payment-webhook`** — bandingkan dua branch: common ancestor, commit yang hanya ada di masing-masing, dan file yang berbeda
 
 ![gfbcompare](screenshots/gfbcompare.png)
