@@ -842,6 +842,223 @@ gfblog() {
 }
 
 # ════════════════════════════════════════════════════════════════════
+# gfbcommits — daftar commit branch + asal tiap commit
+#   gfbcommits                  → 30 commit terakhir branch aktif
+#   gfbcommits 50               → 50 commit ke belakang
+#   gfbcommits -b develop       → base develop (default master/main)
+#   gfbcommits -o kiki/feat/x   → hanya commit milik branch itu
+# Asal commit:
+#   ●  branch ini     → first-parent di atas base, bukan dari branch induk
+#   ◆  merge          → merge commit di branch ini (← sumbernya)
+#   ○  ← <branch>     → masuk lewat merge / branch induk tempat dibuat
+#   ·  base           → sudah ada di base (sebelum fork / hasil merge base)
+# ════════════════════════════════════════════════════════════════════
+_gfbcommits_usage() {
+  _gfb_head "gfbcommits" "daftar commit branch + asal tiap commit"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Lihat N commit terakhir sebuah branch dan tandai mana yang benar-benar"
+  _gfb_text "dibuat di branch ini, mana yang masuk dari branch lain (merge / branch"
+  _gfb_text "induk tempat branch ini dibuat), dan mana yang sudah ada di base."
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbcommits [jumlah] [-b base] [-o] [-m] [branch]"
+  _gfb_note "default: 30 commit, base = master/main, branch = branch aktif (@)"
+  _gfb_sec "Argumen"
+  _gfb_opt "[jumlah]" "berapa commit ke belakang (sama dengan -n)"
+  _gfb_opt "[branch]" "branch yang dicek, default branch aktif (@)"
+  _gfb_sec "Opsi"
+  _gfb_opt "-n <jumlah>" "berapa commit ke belakang, default 30"
+  _gfb_opt "-b, --base" "base pembanding, default master (atau main)"
+  _gfb_opt "-o, --own" "hanya tampilkan commit milik branch ini"
+  _gfb_opt "-m, --no-merges" "sembunyikan merge commit"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Tanda"
+  _gfb_opt "●  branch ini" "commit yang dibuat di branch ini"
+  _gfb_opt "◆  merge" "merge commit di branch ini (← branch sumbernya)"
+  _gfb_opt "○  ← <branch>" "dari branch lain: di-merge masuk, atau branch induk"
+  _gfb_opt "·  base" "sudah ada di base"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbcommits" "30 commit terakhir branch aktif"
+  _gfb_ex "gfbcommits 50" "50 commit ke belakang"
+  _gfb_ex "gfbcommits -b develop 20" "base develop"
+  _gfb_ex "gfbcommits -o kiki/feat/SP-900" "hanya commit milik SP-900"
+  _gfb_sec "Catatan"
+  _gfb_note "Branch induk dikenali dari branch lain (lokal/origin) yang ujungnya ada di"
+  _gfb_note "jalur first-parent branch ini. Sumber merge dibaca dari pesan merge commit."
+  print
+}
+
+# Nama branch sumber dari pesan merge commit (GitHub / GitLab / Bitbucket / git)
+_gfb_merge_src() {
+  local s=$1 r=''
+  local re_pr='^Merge pull request #[0-9]+ from [^/]+/(.+)$'
+  local re_br="^Merge (remote-tracking )?branch '([^']+)'"
+  local re_bb='^Merged in ([^ ]+)'
+  if   [[ $s =~ $re_pr ]]; then r=${match[1]}
+  elif [[ $s =~ $re_br ]]; then r=${match[2]}
+  elif [[ $s =~ $re_bb ]]; then r=${match[1]}
+  fi
+  print -r -- "${r#origin/}"
+}
+
+gfbcommits() {
+  local n=30 base="" target="" only_own=false no_merges=false
+
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      -h|--help) _gfbcommits_usage; return 0 ;;
+      -n) n="$2"; shift ;;
+      -b|--base) base="$2"; shift ;;
+      -o|--own) only_own=true ;;
+      -m|--no-merges) no_merges=true ;;
+      -<->) n=${1#-} ;;
+      -*) _gfb_bad gfbcommits "Flag tidak dikenal: $1"; return 1 ;;
+      <->) n=$1 ;;
+      *) target="$1" ;;
+    esac
+    shift
+  done
+
+  if [[ "$n" != <-> ]] || (( n < 1 )); then
+    _gfb_bad gfbcommits "Jumlah commit harus angka > 0 (dapat: '$n')."
+    return 1
+  fi
+  _gfb_repo || return 1
+
+  target=$(_gfb_ref "${target:-@}")
+  if [ -z "$base" ]; then
+    local cand
+    for cand in master main origin/master origin/main; do
+      git rev-parse --verify -q "$cand^{commit}" >/dev/null && { base=$cand; break; }
+    done
+  else
+    base=$(_gfb_ref "$base")
+  fi
+  local ref
+  for ref in "$base" "$target"; do
+    if [ -z "$ref" ] || ! git rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+      _gfb_err "Branch '${ref:-master/main}' tidak ditemukan."
+      return 1
+    fi
+  done
+
+  local B D N G R Y C M; _gfb_pal
+  local US=$'\x1f' h
+
+  # ── Jalur first-parent branch ini di atas base (baru → lama) ──
+  local -a fp=(${(f)"$(git rev-list --first-parent "^$base" "$target")"})
+  local -A own_set src
+
+  # Ujung branch lain (lokal + origin) yang ada di jalur first-parent
+  # = branch induk; commit sejak ujung itu ke bawah berasal darinya.
+  local -A tips
+  local tbase=${target#origin/} sha name
+  while IFS=' ' read -r sha name; do
+    [[ -z "$name" || "$name" == */HEAD || "$name" == origin ]] && continue
+    [[ "${name#origin/}" == "$tbase" || "${name#origin/}" == "$tbase"-old-* ]] && continue
+    tips[$sha]+="${tips[$sha]:+, }$name"
+  done < <(git for-each-ref --merged="$target" --no-merged="$base" \
+             --format='%(objectname) %(refname:short)' refs/heads refs/remotes/origin 2>/dev/null)
+
+  local label='' pick x
+  local -a nm
+  for h in "${fp[@]}"; do
+    if [ -n "${tips[$h]}" ]; then
+      # utamakan nama lokal kalau ada lokal + origin
+      nm=(${(s:, :)tips[$h]})
+      pick=${nm[1]}
+      for x in "${nm[@]}"; do [[ $x != origin/* ]] && { pick=$x; break; }; done
+      label=$pick
+    fi
+    if [ -n "$label" ]; then src[$h]=$label; else own_set[$h]=1; fi
+  done
+
+  # ── Commit yang masuk lewat merge di jalur first-parent ──
+  local -A merge_src
+  local m subj from p
+  for m in $(git rev-list --first-parent --merges "^$base" "$target"); do
+    subj=$(git log -1 --format=%s "$m")
+    from=$(_gfb_merge_src "$subj")
+    [ -z "$from" ] && from="merge $(git rev-parse --short "$m")"
+    merge_src[$m]=$from
+    for p in $(git rev-list --parents -n 1 "$m" | cut -d' ' -f3-); do
+      for h in $(git rev-list "^$m^1" "^$base" "$p"); do
+        [ -z "${src[$h]}" ] && src[$h]=$from
+      done
+    done
+  done
+
+  # ── Ringkasan ──
+  local fork=$(git merge-base "$base" "$target" 2>/dev/null)
+  local n_own=0 n_merge=0 n_other=0
+  for h in "${fp[@]}"; do
+    (( ${+own_set[$h]} )) || continue
+    if (( ${+merge_src[$h]} )); then (( n_merge++ )); else (( n_own++ )); fi
+  done
+  n_other=$(( $(git rev-list --count "^$base" "$target") - n_own - n_merge ))
+
+  _gfb_head "gfbcommits" "commit branch + asal tiap commit"
+  _gfb_kv "branch" "$target"
+  _gfb_kv "base" "$base${fork:+  ${D}fork di $(git rev-parse --short "$fork")${N}}"
+  _gfb_kv "isi" "${G}$n_own${N} commit branch ini ${D}·${N} ${C}$n_merge${N} merge ${D}·${N} ${M}$n_other${N} dari branch lain ${D}(total di atas base)${N}"
+
+  # ── Daftar ──
+  local -a args=(-n "$n")
+  [ "$no_merges" = true ] && args+=(--no-merges)
+  [ "$only_own" = true ] && args=(--first-parent "^$base" "${args[@]}")
+  local -a rows=(${(f)"$(git log "${args[@]}" --format="%H${US}%h${US}%s${US}%cr${US}%an${US}%P" "$target")"})
+
+  local row line shown=0
+  local -a f parents
+  local -A cnt
+  local out=''
+  for row in "${rows[@]}"; do
+    f=("${(@ps:$US:)row}")
+    h=${f[1]}
+    parents=(${=f[6]})
+    line="${Y}${f[2]}${N}  ${f[3]} ${D}· ${f[4]} · ${f[5]}${N}"
+    if (( ${+own_set[$h]} )) && (( ${#parents} > 1 )); then
+      line="${C}◆${N} $line  ${C}← ${merge_src[$h]}${N}"; cnt[merge]=$(( ${cnt[merge]:-0} + 1 ))
+    elif (( ${+own_set[$h]} )); then
+      line="${G}●${N} $line"; cnt[own]=$(( ${cnt[own]:-0} + 1 ))
+    elif [ -n "${src[$h]}" ]; then
+      [ "$only_own" = true ] && continue
+      line="${M}○${N} $line  ${M}← ${src[$h]}${N}"; cnt[other]=$(( ${cnt[other]:-0} + 1 ))
+    else
+      [ "$only_own" = true ] && continue
+      line="${D}· ${f[2]}  ${f[3]} · ${f[4]} · ${f[5]}  (base)${N}"; cnt[base]=$(( ${cnt[base]:-0} + 1 ))
+    fi
+    (( shown++ ))
+    out+="    $line"$'\n'
+  done
+
+  if (( shown == 0 )); then
+    print
+    if [ "$only_own" = true ]; then
+      _gfb_ok "Tidak ada commit milik $target di atas $base."
+    else
+      _gfb_ok "Tidak ada commit."
+    fi
+    print
+    return 0
+  fi
+
+  local -a parts=()
+  (( ${cnt[own]:-0} ))   && parts+=("${G}${cnt[own]} branch ini${N}")
+  (( ${cnt[merge]:-0} )) && parts+=("${C}${cnt[merge]} merge${N}")
+  (( ${cnt[other]:-0} )) && parts+=("${M}${cnt[other]} branch lain${N}")
+  (( ${cnt[base]:-0} ))  && parts+=("${D}${cnt[base]} base${N}")
+  local what="$shown terakhir"
+  [ "$only_own" = true ] && what="$shown terakhir, milik branch ini"
+  _gfb_sec "Commit" "$what"
+  print -rn -- "$out"
+  print
+  print -r -- "    ${(j: · :)parts}"
+  print -r -- "    ${D}● branch ini  ◆ merge  ○ ← branch lain  · base${N}"
+  (( ${#rows} >= n )) && _gfb_hint "gfbcommits $(( n * 2 ))" "lihat lebih jauh ke belakang"
+  print
+}
+
+# ════════════════════════════════════════════════════════════════════
 # gfbfind — cari commit ada di branch mana saja
 #   gfbfind 56c97cde
 #   gfbfind 56c97cde -r            → termasuk remote
@@ -5767,6 +5984,7 @@ gfbmain() {
   _gfb_opt "gfbrepos"     "branch aktif semua repo di bawah folder ini"
   _gfb_opt "gfbstatus"    "git status versi lengkap (+ recap AI)"
   _gfb_opt "gfblog"       "commit yang belum ada di base"
+  _gfb_opt "gfbcommits"   "commit branch + asal: branch ini / branch lain / base"
   _gfb_opt "gfbcompare"   "bandingkan dua branch"
   _gfb_opt "gfbrange"     "commit & file di antara dua hash"
   _gfb_opt "gfbfind"      "commit ada di branch mana saja"

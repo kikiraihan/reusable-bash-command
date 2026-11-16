@@ -93,6 +93,16 @@ Ketik `gfbmain` untuk daftar semua perintah, atau `gfbmain help <cmd>` / `<cmd> 
 
 ![gfblog](screenshots/gfblog.png)
 
+**`gfbcommits`** — daftar N commit terakhir sebuah branch, ditandai asalnya: `●` dibuat di branch ini, `◆` merge commit, `○ ← <branch>` dari branch lain (di-merge masuk / branch induk tempat branch ini dibuat), `·` sudah ada di base
+
+```bash
+gfbcommits                    # 30 commit terakhir branch aktif, base master/main
+gfbcommits 50                 # 50 commit ke belakang
+gfbcommits -b develop 20      # base develop
+gfbcommits -o                 # hanya commit milik branch ini
+gfbcommits -m kiki/feat/SP-900  # branch lain, tanpa merge commit
+```
+
 **`gfbcompare main feature/payment-webhook`** — bandingkan dua branch: common ancestor, commit yang hanya ada di masing-masing, dan file yang berbeda
 
 ![gfbcompare](screenshots/gfbcompare.png)
