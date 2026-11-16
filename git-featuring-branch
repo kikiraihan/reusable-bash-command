@@ -1090,7 +1090,7 @@ _gfbshow_usage() {
   _gfb_opt "-h, --help" "bantuan ini"
   _gfb_sec "Isi"
   _gfb_note "info commit → ringkasan AI → file berubah (+/-) → tanya: potongan baris berubah?"
-  _gfb_note "Enter = ya. Kalau output bukan terminal, tidak ditanya (pakai -d)."
+  _gfb_note "Enter = tidak. Kalau output bukan terminal, tidak ditanya (pakai -d)."
   _gfb_note "Merge commit dibandingkan dengan parent pertama (isi yang dibawa merge)."
   _gfb_sec "Contoh"
   _gfb_ex "gfbshow" "commit terakhir"
@@ -1298,7 +1298,7 @@ gfbshow() {
 
   # ── Potongan baris yang berubah: -d langsung, selain itu tanya dulu ──
   if [ "$show_diff" != true ]; then
-    if [[ -t 0 && -t 1 ]] && _gfb_confirm "Tampilkan baris yang berubah?" y; then
+    if [[ -t 0 && -t 1 ]] && _gfb_confirm "Tampilkan baris yang berubah?" n; then
       show_diff=true
     else
       [[ -t 0 && -t 1 ]] || { print; _gfb_hint "gfbshow ${sha[1,9]} -d" "tampilkan baris yang berubah"; }
