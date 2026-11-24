@@ -1915,6 +1915,460 @@ $commits"
 }
 
 # ════════════════════════════════════════════════════════════════════
+# gfbpropen — buat Pull Request (GitHub, via gh) dengan judul & deskripsi dari AI
+#   gfbpropen                    → pilih tujuan: sandbox (develop/dev_sprint_N) atau master
+#   gfbpropen -dev               → ke sandbox terakhir repo ini (juga -sandbox, --stage)
+#   gfbpropen --master           → ke master terakhir repo ini (juga --prod)
+#   gfbpropen dev_sprint_9a      → base eksplisit (jenis ditebak dari nama)
+#   gfbpropen -dev -f            → tanpa konfirmasi apa pun
+# Base terakhir per jenis (sandbox / master) diingat per repo di git config lokal
+# (gfb.prsandbox / gfb.prmaster), jadi beda tiap repo & ikut ke semua worktree-nya.
+# ════════════════════════════════════════════════════════════════════
+_gfbpropen_usage() {
+  _gfb_head "gfbpropen" "buat Pull Request + judul & deskripsi dari AI"
+  _gfb_sec "Untuk apa"
+  _gfb_text "Membuat PR dari branch aktif ke base sandbox (develop, dev_sprint_N, …) atau"
+  _gfb_text "master. Selalu merekomendasikan tujuan dan mengingat base terakhir per jenis,"
+  _gfb_text "per repo. Judul & deskripsi dibuat AI dari commit (seperti gfbpr)."
+  _gfb_text "Semua langkah dikonfirmasi dulu, kecuali pakai -f."
+  _gfb_sec "Pemakaian"
+  _gfb_use "gfbpropen [jenis] [base] [opsi] [-- <opsi gh pr create>]"
+  _gfb_sec "Jenis tujuan"
+  _gfb_opt "-dev, -sandbox" "sandbox (juga -s, --dev, --sandbox, --stage, --staging)"
+  _gfb_opt "--master, -M" "master (juga -master, --prod, --production)"
+  _gfb_note "tanpa jenis → ditanya, dengan rekomendasi: sandbox kalau commit belum ada"
+  _gfb_note "di sandbox, master kalau semua commit sudah masuk sandbox"
+  _gfb_sec "Argumen"
+  _gfb_opt "[base]" "base eksplisit (juga -b); jenis ditebak dari nama kalau tanpa flag"
+  _gfb_sec "Opsi"
+  _gfb_opt "-H, --head <b>" "branch sumber, default branch aktif (@)"
+  _gfb_opt "-d, --draft" "buat sebagai draft PR"
+  _gfb_opt "-w, --web" "buka PR di browser setelah dibuat"
+  _gfb_opt "-r, --reviewer <x>" "tambah reviewer (bisa diulang)"
+  _gfb_opt "-p, --provider" "AI: groq (default) atau gemini"
+  _gfb_opt "-m, --model" "pilih model AI manual"
+  _gfb_opt "--no-ai" "judul & deskripsi langsung dari daftar commit"
+  _gfb_opt "-f, --force" "tanpa konfirmasi (push, pilih base, isi PR)"
+  _gfb_opt "-n, --dry-run" "tampilkan rencana saja"
+  _gfb_opt "-h, --help" "bantuan ini"
+  _gfb_sec "Ingatan base per repo"
+  _gfb_opt "--remember" "tampilkan base sandbox & master yang diingat"
+  _gfb_opt "--set-sandbox <b>" "set base sandbox"
+  _gfb_opt "--set-master <b>" "set base master"
+  _gfb_opt "--forget" "hapus ingatan repo ini"
+  _gfb_sec "Contoh"
+  _gfb_ex "gfbpropen" "pilih tujuan (Enter = rekomendasi)"
+  _gfb_ex "gfbpropen -dev" "ke sandbox terakhir (mis. dev_sprint_8b)"
+  _gfb_ex "gfbpropen --master -w" "ke master, lalu buka di browser"
+  _gfb_ex "gfbpropen dev_sprint_9a" "base baru, diingat sebagai sandbox"
+  _gfb_ex "gfbpropen -dev -f" "tanpa konfirmasi"
+  _gfb_ex "gfbpropen -dev -d -r budi" "draft + reviewer"
+  _gfb_ex "gfbpropen -dev -- --label ppob" "opsi tambahan diteruskan ke gh"
+  _gfb_sec "Butuh"
+  _gfb_note "gh (gh auth login) + GROQ_API_KEY / GEMINI_API_KEY (lihat gfbpr -h)"
+  print
+}
+
+# Jenis tujuan dari nama branch: master|sandbox
+_gfbpropen_kind_of() {
+  [[ "$1" =~ '^(master|main|production|prod)$' ]] && print -r -- master || print -r -- sandbox
+}
+
+# Base yang diingat repo ini: _gfbpropen_mem_get <sandbox|master>
+_gfbpropen_mem_get() { git config --local --get "gfb.pr$1" 2>/dev/null; }
+_gfbpropen_mem_set() { git config --local "gfb.pr$1" "$2"; }
+
+_gfbpropen_remote_has() { git show-ref --verify -q "refs/remotes/origin/$1"; }
+
+# Branch sprint terbaru di origin, urut nama (dev_sprint_9b < dev_sprint_10a)
+_gfbpropen_newest_sprint() {
+  git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/dev_sprint_*' 2>/dev/null | sort -V | tail -1
+}
+
+# Base default per jenis: ingatan → kandidat umum yang ada di origin
+_gfbpropen_default_base() {
+  local kind=$1 mem cand
+  mem=$(_gfbpropen_mem_get "$kind")
+  if [ -n "$mem" ] && _gfbpropen_remote_has "$mem"; then print -r -- "$mem"; return 0; fi
+  if [ "$kind" = master ]; then
+    for cand in master main; do _gfbpropen_remote_has "$cand" && { print -r -- "$cand"; return 0; }; done
+  else
+    cand=$(_gfbpropen_newest_sprint)
+    [ -n "$cand" ] && { print -r -- "$cand"; return 0; }
+    for cand in develop development staging sandbox dev; do
+      _gfbpropen_remote_has "$cand" && { print -r -- "$cand"; return 0; }
+    done
+  fi
+  return 1
+}
+
+# Pisahkan output AI jadi judul (baris pertama) & deskripsi. Hasil di $_gfbpropen_title / $_gfbpropen_body.
+_gfbpropen_parse() {
+  setopt localoptions extendedglob
+  local text=$1 line found=''
+  local -a lines rest
+  lines=("${(@f)text}")
+  _gfbpropen_title='' _gfbpropen_body=''
+  for line in "${lines[@]}"; do
+    if [ -z "$found" ]; then
+      [[ -z "${line//[[:space:]]/}" ]] && continue
+      line=${line##[#*[:space:]]#}
+      line=${line#(1.|PR Title:|Title:|PR title:)}
+      line=${line##[*[:space:]]#}
+      line=${line%%[*[:space:]]#}
+      line=${line#[\"\'\`]}; line=${line%[\"\'\`]}
+      _gfbpropen_title=$line
+      found=1
+      continue
+    fi
+    rest+=("$line")
+  done
+  # buang baris kosong / label "PR Description" di awal deskripsi
+  while (( ${#rest} )) && [[ -z "${rest[1]//[[:space:]]/}" || "${rest[1]}" == [[:space:]]#2.[[:space:]]# \
+    || ( "${rest[1]}" == *(#i)description* && ${#rest[1]} -lt 40 && "${rest[1]}" != \#\#* ) ]]; do
+    shift rest
+  done
+  _gfbpropen_body=${(F)rest}
+}
+
+_gfbpropen_generate() {
+  local provider=$1 model=$2 base=$3 head=$4 commits stat prompt
+  commits=$(git log "origin/$base..$head" --no-merges --no-decorate --format='- %s%n%b' 2>/dev/null | sed '/^[[:space:]]*$/d; /^Co-Authored-By:/d')
+  stat=$(git diff --stat=120 "origin/$base...$head" 2>/dev/null | tail -40)
+  (( ${#commits} > 12000 )) && commits="${commits[1,12000]}
+…(dipotong)"
+  prompt="You write GitHub Pull Request titles and descriptions from git commits.
+Rules:
+- Title: Conventional Commit style (feat, fix, chore, refactor, docs, test), max 72 characters, summarizing the most important change.
+- Description in Markdown with sections: ## Summary, ## Changes (grouped bullets: Features, Bug Fixes, Security, Refactor, Testing, Cleanup — only the ones that apply), ## Impact, ## Testing.
+- Use the same language as the commit messages. Normalize typos, group overlapping commits, prefer clarity over repeating every commit.
+- Do not invent changes that are not in the commits or file list.
+Output format (strict):
+Line 1: the PR title only (no label, no quotes, no markdown).
+Line 2: empty.
+Line 3 onward: the description, starting with ## Summary.
+Nothing else.
+
+Base branch: $base
+Head branch: $head
+
+Commits:
+$commits
+
+Changed files:
+$stat"
+  _gfb_ai_generate "$provider" "$model" "$prompt" 0.3
+}
+
+gfbpropen() {
+  local kind='' base='' head='' provider=groq model='' draft='' web='' noai='' force='' dry=''
+  local -a reviewers passthru
+  local arg ch mem_action='' mem_value=''
+
+  while (( $# )); do
+    case $1 in
+      -h|--help) _gfbpropen_usage; return 0 ;;
+      -s|-sb|-dev|--dev|-sandbox|--sandbox|-stage|--stage|-staging|--staging) kind=sandbox ;;
+      -M|-master|--master|-prod|--prod|-production|--production) kind=master ;;
+      -b|--base) [ -z "$2" ] && { _gfb_bad gfbpropen "$1 butuh nama branch"; return 1; }; base=$(_gfb_ref "$2"); shift ;;
+      -H|--head) [ -z "$2" ] && { _gfb_bad gfbpropen "$1 butuh nama branch"; return 1; }; head=$(_gfb_ref "$2"); shift ;;
+      -d|--draft) draft=1 ;;
+      -w|--web) web=1 ;;
+      -r|--reviewer) [ -z "$2" ] && { _gfb_bad gfbpropen "$1 butuh nama reviewer"; return 1; }; reviewers+=("$2"); shift ;;
+      -p|--provider) provider=$2; shift ;;
+      -m|--model) model=$2; shift ;;
+      --no-ai) noai=1 ;;
+      -f|--force|-y|--yes) force=1 ;;
+      -n|--dry-run) dry=1 ;;
+      --remember) mem_action=show ;;
+      --forget) mem_action=forget ;;
+      --set-sandbox|--set-master)
+        [ -z "$2" ] && { _gfb_bad gfbpropen "$1 butuh nama branch"; return 1; }
+        mem_action=${1#--set-}; mem_value=$2; shift ;;
+      --) shift; passthru=("$@"); break ;;
+      -*)
+        # flag gabungan pendek, mis. -dfw
+        if [[ "$1" =~ '^-[dfwnsM]{2,}$' ]]; then
+          for ch in ${(s::)${1#-}}; do
+            case $ch in d) draft=1 ;; f) force=1 ;; w) web=1 ;; n) dry=1 ;; s) kind=sandbox ;; M) kind=master ;; esac
+          done
+        else
+          _gfb_bad gfbpropen "Flag tidak dikenal: $1"; return 1
+        fi ;;
+      *)
+        [ -n "$base" ] && { _gfb_bad gfbpropen "Base sudah diisi ($base), argumen berlebih: $1"; return 1; }
+        base=$(_gfb_ref "$1") ;;
+    esac
+    shift
+  done
+
+  _gfb_repo || return 1
+
+  # ── ingatan repo ──
+  case $mem_action in
+    show)
+      _gfb_head "gfbpropen" "base yang diingat repo ini"
+      _gfb_kv "sandbox" "$(_gfbpropen_mem_get sandbox || true)"
+      _gfb_kv "master" "$(_gfbpropen_mem_get master || true)"
+      _gfb_note "disimpan di git config lokal: gfb.prsandbox / gfb.prmaster"
+      print; return 0 ;;
+    forget)
+      git config --local --unset "gfb.prsandbox" 2>/dev/null
+      git config --local --unset "gfb.prmaster" 2>/dev/null
+      _gfb_ok "Ingatan base PR repo ini dihapus."; return 0 ;;
+    sandbox|master)
+      _gfbpropen_mem_set "$mem_action" "$mem_value" && _gfb_ok "Base $mem_action repo ini: $mem_value"; return 0 ;;
+  esac
+
+  command -v gh >/dev/null 2>&1 || { _gfb_err "gh belum terpasang (brew install gh, lalu gh auth login)."; return 1; }
+  [ -z "$head" ] && head=$(_gfb_cur)
+  if [[ "$head" =~ $GFB_PROTECTED || "$head" == dev_sprint_* || "$head" == HEAD ]]; then
+    _gfb_err "Branch '$head' bukan feature branch; PR dari sini tidak dibuat."
+    return 1
+  fi
+  if [ -z "$noai" ]; then
+    [ -z "$model" ] && { model=$(_gfb_ai_model "$provider") || return 1; }
+    _gfb_ai_key "$provider" || return 1
+  fi
+
+  local repo_name
+  repo_name=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+  [ -z "$repo_name" ] && repo_name=$(basename "$(git rev-parse --show-toplevel)")
+
+  _gfb_head "gfbpropen" "buat Pull Request"
+  _gfb_kv "repo" "$repo_name"
+  _gfb_kv "head" "$head"
+
+  _gfb_step "Fetch origin…"
+  git fetch -q --prune origin 2>/dev/null || _gfb_warn "git fetch gagal, memakai data origin terakhir."
+  _gfb_unwait
+
+  # ── tentukan base ──
+  local sb_base ms_base sb_cnt ms_cnt rec reason newest choice
+  if [ -n "$base" ]; then
+    [ -z "$kind" ] && kind=$(_gfbpropen_kind_of "$base")
+  else
+    sb_base=$(_gfbpropen_default_base sandbox)
+    ms_base=$(_gfbpropen_default_base master)
+    sb_cnt=''; ms_cnt=''
+    [ -n "$sb_base" ] && sb_cnt=$(git rev-list --count --no-merges "origin/$sb_base..$head" 2>/dev/null)
+    [ -n "$ms_base" ] && ms_cnt=$(git rev-list --count --no-merges "origin/$ms_base..$head" 2>/dev/null)
+
+    if [ -n "$kind" ]; then
+      rec=$kind
+    elif [ -n "$sb_base" ] && (( ${sb_cnt:-0} > 0 )); then
+      rec=sandbox; reason="${sb_cnt} commit belum ada di $sb_base"
+    elif [ -n "$ms_base" ] && (( ${ms_cnt:-0} > 0 )); then
+      rec=master; reason="semua commit sudah ada di ${sb_base:-sandbox}"
+    else
+      rec=sandbox; reason=''
+    fi
+
+    if [ -n "$kind" ] || [ -n "$force" ]; then
+      kind=$rec
+    else
+      local B D N G R Y C M; _gfb_pal
+      _gfb_sec "Tujuan PR"
+      printf "    ${C}1${N}  sandbox  %-22s ${D}%s${N}\n" "${sb_base:--}" \
+        "${sb_base:+${sb_cnt:-0} commit}$([ "$sb_base" = "$(_gfbpropen_mem_get sandbox)" ] && [ -n "$sb_base" ] && print -r -- ' · terakhir dipakai')$([ $rec = sandbox ] && print -r -- '  ← rekomendasi')"
+      printf "    ${C}2${N}  master   %-22s ${D}%s${N}\n" "${ms_base:--}" \
+        "${ms_base:+${ms_cnt:-0} commit}$([ "$ms_base" = "$(_gfbpropen_mem_get master)" ] && [ -n "$ms_base" ] && print -r -- ' · terakhir dipakai')$([ $rec = master ] && print -r -- '  ← rekomendasi')"
+      printf "    ${C}3${N}  lainnya  ${D}ketik nama branch${N}\n"
+      [ -n "$reason" ] && _gfb_note "rekomendasi: $reason"
+      _gfb_ask choice "Pilih" "[$([ $rec = master ] && print 2 || print 1)]"
+      [ -z "$choice" ] && choice=$([ $rec = master ] && print 2 || print 1)
+      case $choice in
+        1|s|sandbox) kind=sandbox ;;
+        2|m|master) kind=master ;;
+        3) _gfb_ask base "Nama base branch"; [ -z "$base" ] && { _gfb_warn "Dibatalkan."; return 1; }
+           kind=$(_gfbpropen_kind_of "$base") ;;
+        *) base=$choice; kind=$(_gfbpropen_kind_of "$base") ;;
+      esac
+    fi
+    if [ -z "$base" ]; then
+      [ $kind = sandbox ] && base=$sb_base || base=$ms_base
+    fi
+  fi
+
+  if [ -z "$base" ]; then
+    _gfb_err "Base $kind belum diketahui untuk repo ini. Sebutkan base-nya, mis. gfbpropen -dev develop"
+    return 1
+  fi
+
+  # Saran: ada sprint yang lebih baru dari base sandbox yang diingat
+  newest=$(_gfbpropen_newest_sprint)
+  if [ $kind = sandbox ] && [[ "$base" == dev_sprint_* ]] && [ -n "$newest" ] && [ "$newest" != "$base" ] \
+    && [ "$(printf '%s\n%s\n' "$base" "$newest" | sort -V | tail -1)" = "$newest" ]; then
+    _gfb_warn "Ada branch sprint yang lebih baru di origin: $newest (base sekarang $base)."
+    if [ -z "$force" ] && _gfb_confirm "Pakai $newest sebagai base?" n; then
+      base=$newest
+    fi
+  fi
+
+  if ! _gfbpropen_remote_has "$base"; then
+    _gfb_err "Base '$base' tidak ada di origin."
+    return 1
+  fi
+  [ "$base" = "$head" ] && { _gfb_err "Base sama dengan head ($head)."; return 1; }
+
+  _gfb_kv "base" "$base  ($kind)"
+
+  # ── PR yang sudah terbuka? ──
+  local existing
+  existing=$(gh pr list --head "$head" --base "$base" --state open --json number,url,title \
+    -q '.[0] | select(.) | "#\(.number) \(.title)\n\(.url)"' 2>/dev/null)
+  if [ -n "$existing" ]; then
+    print
+    _gfb_info "PR ke $base sudah terbuka:"
+    _gfb_text "${existing%%$'\n'*}"
+    _gfb_hint "${existing##*$'\n'}"
+    [ -z "$dry" ] && _gfbpropen_mem_set "$kind" "$base"
+    [ -n "$web" ] && gh pr view "${existing##*$'\n'}" --web >/dev/null 2>&1
+    print; return 0
+  fi
+
+  # ── commit yang akan masuk ──
+  local cnt
+  cnt=$(git rev-list --count "origin/$base..$head" 2>/dev/null)
+  if (( ${cnt:-0} == 0 )); then
+    print; _gfb_ok "Tidak ada commit baru di $head dibanding origin/$base. PR tidak dibuat."; print
+    return 0
+  fi
+  _gfb_kv "commit" "$cnt"
+  _gfb_sec "Commit"
+  _gfb_commits --no-merges -20 "origin/$base..$head"
+  (( cnt > 20 )) && _gfb_note "… dan $(( cnt - 20 )) lainnya"
+
+  # ── status push head ──
+  local need_push='' ahead='' behind=0
+  if _gfbpropen_remote_has "$head"; then
+    ahead=$(git rev-list --count "origin/$head..$head" 2>/dev/null)
+    behind=$(git rev-list --count "$head..origin/$head" 2>/dev/null)
+    (( ahead > 0 )) && need_push=1
+  else
+    need_push=1
+  fi
+  if (( behind > 0 )); then
+    _gfb_warn "origin/$head punya $behind commit yang tidak ada di lokal (pull dulu?). Push biasa akan ditolak."
+    if [ -z "$force" ] && ! _gfb_confirm "Tetap lanjut tanpa push (PR memakai origin/$head)?" n; then
+      return 1
+    fi
+    need_push=''
+  fi
+
+  if [ -n "$dry" ]; then
+    _gfb_sec "Rencana (dry-run)"
+    [ -n "$need_push" ] && _gfb_bullet "git push -u origin $head"
+    _gfb_bullet "generate judul & deskripsi ($([ -n "$noai" ] && print 'dari daftar commit' || print "$provider · $model"))"
+    _gfb_bullet "gh pr create --base $base --head $head${draft:+ --draft}${reviewers:+ --reviewer ${(j:,:)reviewers}} ${passthru[*]}"
+    _gfb_bullet "ingat base $kind repo ini → $base"
+    print; return 0
+  fi
+
+  if [ -n "$need_push" ]; then
+    if [ -n "$force" ] || _gfb_confirm "Push $head ke origin${ahead:+ ($ahead commit baru)}?" y; then
+      _gfb_step "git push -u origin $head"
+      git push -u origin "$head" || { _gfb_err "Push gagal."; return 1; }
+    else
+      _gfb_warn "Dibatalkan: head belum ada / belum terbaru di origin."
+      return 1
+    fi
+  fi
+
+  # ── judul & deskripsi ──
+  local result tmp ans
+  typeset -g _gfbpropen_title='' _gfbpropen_body=''
+  tmp=$(mktemp -t gfbpropen) || return 1
+
+  while true; do
+    if [ -z "$noai" ]; then
+      print
+      _gfb_step "Generating PR ($provider · $model)…"
+      if result=$(_gfbpropen_generate "$provider" "$model" "$base" "$head"); then
+        _gfb_unwait
+        _gfbpropen_parse "$result"
+      else
+        _gfb_warn "AI gagal; judul & deskripsi diambil dari daftar commit."
+        noai=1
+      fi
+    fi
+    if [ -n "$noai" ]; then
+      _gfbpropen_title=$(git log --reverse --no-merges --format=%s "origin/$base..$head" 2>/dev/null | head -1)
+      _gfbpropen_body="## Changes
+$(git log --reverse --no-merges --format='- %s' "origin/$base..$head")"
+    fi
+    [ -z "$_gfbpropen_title" ] && _gfbpropen_title=$head
+
+    while true; do
+      print
+      _gfb_rule
+      _gfb_text "$_gfbpropen_title"
+      print
+      print -r -- "$_gfbpropen_body" | sed 's/^/    /'
+      _gfb_rule
+      [ -n "$force" ] && { ans=y; break; }
+      _gfb_ask ans "Buat PR $head → $base?" "[y]a / [e]dit / [r]egenerate / [n]batal"
+      case $ans in
+        y|Y|ya) break ;;
+        e|E)
+          print -r -- "$_gfbpropen_title"$'\n\n'"$_gfbpropen_body" > "$tmp"
+          ${VISUAL:-${EDITOR:-vi}} "$tmp"
+          _gfbpropen_parse "$(cat "$tmp")" ;;
+        r|R) [ -n "$noai" ] && { _gfb_warn "Regenerate butuh AI (tanpa --no-ai)."; continue; }; break ;;
+        *) rm -f "$tmp"; _gfb_warn "Dibatalkan, PR tidak dibuat."; print; return 1 ;;
+      esac
+    done
+    [[ "$ans" == [rR] ]] && continue
+    break
+  done
+
+  # ── buat PR ──
+  local -a args
+  args=(--base "$base" --head "$head" --title "$_gfbpropen_title" --body-file "$tmp")
+  [ -n "$draft" ] && args+=(--draft)
+  local rv
+  for rv in "${reviewers[@]}"; do args+=(--reviewer "$rv"); done
+  args+=("${passthru[@]}")
+  print -r -- "$_gfbpropen_body" > "$tmp"
+
+  _gfb_step "gh pr create --base $base --head $head${draft:+ --draft}"
+  local url
+  if ! url=$(gh pr create "${args[@]}" 2>&1); then
+    rm -f "$tmp"
+    _gfb_err "Gagal membuat PR:"
+    print -r -- "$url" | sed 's/^/    /' >&2
+    return 1
+  fi
+  rm -f "$tmp"
+  url=$(print -r -- "$url" | grep -Eo 'https://[^ ]+/pull/[0-9]+' | tail -1)
+
+  _gfbpropen_mem_set "$kind" "$base"
+  print
+  _gfb_ok "PR dibuat: $head → $base"
+  _gfb_hint "$url"
+  _gfb_note "base $kind repo ini diingat: $base"
+  [ -n "$web" ] && [ -n "$url" ] && gh pr view "$url" --web >/dev/null 2>&1
+  print
+}
+
+_gfbpropen() {
+  _arguments -s \
+    '(-M --master)'{-s,--sandbox,-dev}'[ke sandbox (develop/dev_sprint_N)]' \
+    '(-s --sandbox -dev)'{-M,--master}'[ke master]' \
+    {-b,--base}'[base branch]:base:_gfb_branches' \
+    {-H,--head}'[head branch]:head:_gfb_branches' \
+    {-d,--draft}'[draft PR]' {-w,--web}'[buka di browser]' \
+    {-r,--reviewer}'[reviewer]:reviewer:' \
+    {-p,--provider}'[provider AI]:provider:(groq gemini)' {-m,--model}'[model AI]:model:' \
+    '--no-ai[tanpa AI]' {-f,--force}'[tanpa konfirmasi]' {-n,--dry-run}'[dry-run]' \
+    '--remember[tampilkan ingatan base]' '--forget[hapus ingatan base]' \
+    '--set-sandbox[set base sandbox]:base:_gfb_branches' '--set-master[set base master]:base:_gfb_branches' \
+    {-h,--help}'[bantuan]' \
+    '1:base branch:_gfb_branches'
+}
+(( $+functions[compdef] )) && compdef _gfbpropen gfbpropen
+
+# ════════════════════════════════════════════════════════════════════
 # gfbcm — generate commit message dari perubahan saat ini via AI (gaya GitHub Copilot)
 #   - ada yang di-stage    → hanya pakai perubahan staged
 #   - tidak ada yang stage → pakai changes (unstaged + file baru/untracked)
@@ -6441,6 +6895,7 @@ gfbmain() {
   _gfb_sec "AI & tools"
   _gfb_opt "gfbcm"        "generate commit message (-a/-c langsung commit)"
   _gfb_opt "gfbpr"        "generate judul & deskripsi PR"
+  _gfb_opt "gfbpropen"    "buat PR ke sandbox / master (base diingat per repo)"
   _gfb_opt "gfblarklink"  "link Lark (Story & Issue) dari nama branch"
   _gfb_opt "gfblarkbranch" "branch terkait dari link/ID Lark (semua repo workspace)"
 

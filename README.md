@@ -137,6 +137,27 @@ gfbrenew -n           # dry-run, lihat rencana saja
 - Base diambil dari `origin/<base>` tanpa checkout, jadi aman dipakai di worktree. Upstream branch dipertahankan.
 - Kalau conflict: proses berhenti, backup tetap aman, dan ditampilkan perintah untuk batal & kembali seperti semula.
 
+**`gfbpropen`** — buat Pull Request (via `gh`) dari branch aktif ke base **sandbox** (`develop`, `dev_sprint_N`, …) atau **master**, dengan judul & deskripsi dari AI (seperti `gfbpr`)
+
+```bash
+gfbpropen                     # pilih tujuan: 1 sandbox / 2 master / 3 lainnya (Enter = rekomendasi)
+gfbpropen -dev                # ke base sandbox terakhir repo ini (juga -sandbox, -s, --stage)
+gfbpropen --master -w         # ke master, lalu buka PR di browser (juga --prod, -M)
+gfbpropen dev_sprint_9a       # base eksplisit; jenis ditebak dari nama, lalu diingat
+gfbpropen -dev -d -r budi     # draft + reviewer
+gfbpropen -dev -- --label ppob   # opsi tambahan diteruskan ke gh pr create
+gfbpropen -dev -f             # tanpa konfirmasi sama sekali
+gfbpropen -dev -n             # dry-run, lihat rencana saja
+gfbpropen --remember          # base sandbox & master yang diingat repo ini
+gfbpropen --set-sandbox dev_sprint_9a   # set ingatan manual (juga --set-master, --forget)
+```
+
+- **Rekomendasi tujuan**: sandbox kalau commit branch belum ada di base sandbox, master kalau semua commit sudah masuk sandbox. Kalau ada `dev_sprint_*` yang lebih baru (urutan nama) dari base yang diingat, ditawarkan untuk dipakai.
+- **Ingatan per repo**: base terakhir per jenis disimpan di git config lokal (`gfb.prsandbox` / `gfb.prmaster`), jadi beda tiap repo dan ikut terbaca di semua worktree repo itu. Diperbarui setiap PR berhasil dibuat.
+- **Alur**: fetch → pilih base → cek PR yang sudah terbuka (ditampilkan, tidak dibuat dobel) → daftar commit → push kalau head belum ada / belum terbaru di origin (tanpa force push) → generate judul & deskripsi → preview `[y]a / [e]dit ($EDITOR) / [r]egenerate / [n]batal` → `gh pr create`.
+- Semua langkah dikonfirmasi, kecuali `-f`. Kalau AI gagal, judul & deskripsi diambil dari daftar commit (`--no-ai` untuk langsung begitu).
+- Butuh `gh auth login` dan `GROQ_API_KEY` / `GEMINI_API_KEY` (lihat `gfbpr -h`).
+
 **`gfblarkbranch`** — kebalikan `gfblarklink`: dari link/ID ticket Lark → branch terkait
 
 ```bash
