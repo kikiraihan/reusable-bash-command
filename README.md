@@ -116,7 +116,14 @@ gfbshow 56c97cde -f Services -a   # file Services saja, semua baris
 gfbshow 56c97cde -p gemini    # ringkasan via Gemini
 ```
 
-**`gfbcompare main feature/payment-webhook`** — bandingkan dua branch: common ancestor, commit yang hanya ada di masing-masing, dan file yang berbeda
+**`gfbcompare main feature/payment-webhook`** — bandingkan dua branch: common ancestor, commit yang hanya ada di masing-masing, dan file yang berbeda. Kalau daftar commit terpotong, di akhir ditawarkan untuk tampilkan semua
+
+```bash
+gfbcompare . master -s a        # fokus: commit branch aktif yang belum ada di master
+gfbcompare . master -s b -m     # fokus: commit master yang belum masuk, tanpa merge commit
+gfbcompare develop @ -n 0       # tampilkan semua commit (default maks 20 per sisi)
+gfbcompare develop @ -f src/services   # commit & file dibatasi ke path itu
+```
 
 ![gfbcompare](screenshots/gfbcompare.png)
 

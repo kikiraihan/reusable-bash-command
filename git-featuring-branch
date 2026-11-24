@@ -102,7 +102,7 @@ _gfb_ref()  { if [[ "$1" == "@" || "$1" == "." ]]; then _gfb_cur; else print -r 
 # Daftar commit rapi: "hash  pesan · waktu · author", argumen diteruskan ke git log
 _gfb_commits() {
   local B D N G R Y C M; _gfb_pal
-  git log --no-decorate --format="    ${Y}%h${N}  %s ${D}· %cr · %an${N}" "$@" 2>/dev/null
+  git --no-pager log --no-decorate --format="    ${Y}%h${N}  %s ${D}· %cr · %an${N}" "$@" 2>/dev/null
 }
 
 # Cetak hasil "git diff --name-status" berwarna + ringkasan per status
@@ -4200,28 +4200,44 @@ _gfbcompare_usage() {
   _gfb_text "Bandingkan dua branch secara menyeluruh: titik diverge, ahead/behind,"
   _gfb_text "commit yang hanya ada di masing-masing, dan file yang berbeda."
   _gfb_sec "Pemakaian"
-  _gfb_use "gfbcompare <branch-a> <branch-b> [-f keyword]"
+  _gfb_use "gfbcompare <branch-a> <branch-b> [-s a|b] [-n N] [-m] [-f keyword]"
   _gfb_sec "Argumen"
-  _gfb_opt "<branch-a>" "branch pertama (@ = branch aktif)"
-  _gfb_opt "<branch-b>" "branch kedua (@ = branch aktif)"
+  _gfb_opt "<branch-a>" "branch pertama (@ atau . = branch aktif)"
+  _gfb_opt "<branch-b>" "branch kedua (@ atau . = branch aktif)"
   _gfb_sec "Opsi"
-  _gfb_opt "-f, --filter" "filter path file"
+  _gfb_opt "-s, --side a|b" "fokus satu arah: a = hanya di A (B→A), b = hanya di B (A→B)"
+  _gfb_opt "-n, --limit N" "maks commit per sisi (default 20, 0 = semua)"
+  _gfb_opt "-m, --no-merges" "sembunyikan merge commit"
+  _gfb_opt "-f, --filter" "filter path file (juga membatasi commit ke path itu)"
   _gfb_opt "-h, --help" "bantuan ini"
   _gfb_sec "Isi"
-  _gfb_note "common ancestor, ahead/behind, commit eksklusif A & B, file yang berbeda."
+  _gfb_note "common ancestor, commit eksklusif A & B, file yang berbeda."
+  _gfb_note "Kalau daftar commit terpotong, di akhir ditawarkan untuk tampilkan semua."
   _gfb_sec "Contoh"
   _gfb_ex "gfbcompare master feature/login"
+  _gfb_ex "gfbcompare . master -s a" "commit branch aktif yang belum di master"
+  _gfb_ex "gfbcompare . master -s b -m" "commit master yang belum masuk, tanpa merge"
+  _gfb_ex "gfbcompare develop @ -n 0" "semua commit, tanpa batas"
   _gfb_ex "gfbcompare develop @ -f src/services" "develop vs branch aktif"
   print
 }
 
 gfbcompare() {
-  local branch_a="" branch_b="" filter=""
+  local branch_a="" branch_b="" filter="" side="" limit=20
+  local -a log_opts=()
 
   while [[ "$#" -gt 0 ]]; do
     case $1 in
       -h|--help) _gfbcompare_usage; return 0 ;;
       -f|--filter) filter="$2"; shift ;;
+      -s|--side)
+        side="${2:l}"
+        if [[ "$side" != (a|b) ]]; then _gfb_bad gfbcompare "--side harus 'a' atau 'b'."; return 1; fi
+        shift ;;
+      -n|--limit)
+        if [[ "$2" != <-> ]]; then _gfb_bad gfbcompare "--limit harus angka (0 = semua)."; return 1; fi
+        limit="$2"; shift ;;
+      -m|--no-merges) log_opts+=(--no-merges) ;;
       -*) _gfb_bad gfbcompare "Flag tidak dikenal: $1"; return 1 ;;
       *)
         if [ -z "$branch_a" ]; then branch_a="$1"
@@ -4253,23 +4269,50 @@ gfbcompare() {
   _gfb_kv "A" "${B}$branch_a${N}"
   _gfb_kv "B" "${B}$branch_b${N}"
   [ -n "$filter" ] && _gfb_kv "filter" "$filter"
+  [ -n "$side" ] && _gfb_kv "fokus" "hanya di ${(U)side}"
 
   # ── Common ancestor ──
   local merge_base=$(git merge-base "$branch_a" "$branch_b" 2>/dev/null)
   if [ -n "$merge_base" ]; then
     _gfb_sec "Common ancestor" "titik diverge"
-    git log -1 --format="    ${Y}%h${N}  %s ${D}· %cd${N}" --date=format:'%Y-%m-%d' "$merge_base"
+    git --no-pager log -1 --format="    ${Y}%h${N}  %s ${D}· %cd${N}" --date=format:'%Y-%m-%d' "$merge_base"
   fi
 
-  # ── Ahead / behind ──
-  local ahead_a=$(git rev-list --count "$branch_b..$branch_a" 2>/dev/null)
-  local ahead_b=$(git rev-list --count "$branch_a..$branch_b" 2>/dev/null)
-
-  _gfb_sec "Hanya di A" "$ahead_a commit · $branch_a"
-  if (( ahead_a == 0 )); then _gfb_note "(tidak ada)"; else _gfb_commits "$branch_b..$branch_a"; fi
-
-  _gfb_sec "Hanya di B" "$ahead_b commit · $branch_b"
-  if (( ahead_b == 0 )); then _gfb_note "(tidak ada)"; else _gfb_commits "$branch_a..$branch_b"; fi
+  # ── Commit eksklusif per sisi ──
+  local -a path_opts=()
+  [ -n "$filter" ] && path_opts=(-- "*$filter*")
+  local -A range total
+  range=(a "$branch_b..$branch_a" b "$branch_a..$branch_b")
+  local s label br extra
+  local -a truncated=()
+  for s in a b; do
+    total[$s]=$(git rev-list --count "${log_opts[@]}" "${range[$s]}" "${path_opts[@]}" 2>/dev/null)
+  done
+  for s in a b; do
+    [ -n "$side" ] && [ "$side" != "$s" ] && continue
+    if [ "$s" = a ]; then label="Hanya di A"; br=$branch_a; else label="Hanya di B"; br=$branch_b; fi
+    extra=""
+    [ -n "$log_opts" ] && extra=" · tanpa merge"
+    _gfb_sec "$label" "${total[$s]} commit$extra · $br"
+    if (( total[$s] == 0 )); then
+      _gfb_note "(tidak ada)"
+      continue
+    fi
+    if (( limit > 0 )); then
+      _gfb_commits "${log_opts[@]}" -n "$limit" "${range[$s]}" "${path_opts[@]}"
+      if (( total[$s] > limit )); then
+        _gfb_note "… $(( total[$s] - limit )) commit lagi"
+        truncated+=($s)
+      fi
+    else
+      _gfb_commits "${log_opts[@]}" "${range[$s]}" "${path_opts[@]}"
+    fi
+  done
+  # Mode fokus: sisi lain cukup ringkasan angka
+  if [ -n "$side" ]; then
+    local other=$([ "$side" = a ] && print b || print a)
+    _gfb_note "(sisi ${(U)other}: ${total[$other]} commit · pakai -s $other untuk melihat)"
+  fi
 
   # ── File yang berbeda ──
   local changed_files=$(git diff --name-status "$branch_a" "$branch_b" 2>/dev/null)
@@ -4280,6 +4323,21 @@ gfbcompare() {
   else
     _gfb_sec "File berbeda" "A → B"
     _gfb_ns_list "$changed_files"
+  fi
+
+  # ── Tawarkan daftar lengkap kalau ada yang terpotong ──
+  if (( ${#truncated} )) && [[ -t 0 && -t 1 ]]; then
+    local ans pick
+    if (( ${#truncated} == 2 )); then
+      _gfb_ask ans "Tampilkan semua commit?" "[a = hanya di A / b = hanya di B / N]"
+      pick="${ans:l}"
+    else
+      _gfb_confirm "Tampilkan semua ${total[${truncated[1]}]} commit 'Hanya di ${(U)truncated[1]}'?" && pick=${truncated[1]}
+    fi
+    if [[ "$pick" == (a|b) ]]; then
+      _gfb_sec "Hanya di ${(U)pick}" "${total[$pick]} commit · semua"
+      _gfb_commits "${log_opts[@]}" "${range[$pick]}" "${path_opts[@]}" | less -FRX
+    fi
   fi
   print
 }
