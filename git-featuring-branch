@@ -1921,6 +1921,8 @@ $commits"
 #   gfbpropen --master           → ke master terakhir repo ini (juga --prod)
 #   gfbpropen dev_sprint_9a      → base eksplisit (jenis ditebak dari nama)
 #   gfbpropen -dev -f            → tanpa konfirmasi apa pun
+# Sebelum push & buat PR, dicek conflict dengan origin/<base> (git merge-tree);
+# kalau ada conflict, proses dibatalkan (juga dengan -f).
 # Base terakhir per jenis (sandbox / master) diingat per repo di git config lokal
 # (gfb.prsandbox / gfb.prmaster), jadi beda tiap repo & ikut ke semua worktree-nya.
 # ════════════════════════════════════════════════════════════════════
@@ -1931,6 +1933,8 @@ _gfbpropen_usage() {
   _gfb_text "master. Selalu merekomendasikan tujuan dan mengingat base terakhir per jenis,"
   _gfb_text "per repo. Judul & deskripsi dibuat AI dari commit (seperti gfbpr)."
   _gfb_text "Semua langkah dikonfirmasi dulu, kecuali pakai -f."
+  _gfb_text "Sebelum push & buat PR, dicek dulu conflict dengan base (simulasi merge via"
+  _gfb_text "git merge-tree, tanpa mengubah working tree). Kalau ada conflict → dibatalkan."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbpropen [jenis] [base] [opsi] [-- <opsi gh pr create>]"
   _gfb_sec "Jenis tujuan"
@@ -1979,6 +1983,24 @@ _gfbpropen_mem_get() { git config --local --get "gfb.pr$1" 2>/dev/null; }
 _gfbpropen_mem_set() { git config --local "gfb.pr$1" "$2"; }
 
 _gfbpropen_remote_has() { git show-ref --verify -q "refs/remotes/origin/$1"; }
+
+# Simulasi merge <base-ref> ← <head-ref> tanpa menyentuh working tree / index.
+# return 0 = bersih, 1 = conflict (file conflict di $_gfbpropen_conflicts), 2 = cek gagal.
+_gfbpropen_check_conflict() {
+  local out rc ref
+  typeset -ga _gfbpropen_conflicts; _gfbpropen_conflicts=()
+  for ref in "$1" "$2"; do
+    git rev-parse -q --verify "$ref^{commit}" >/dev/null || { _gfbpropen_conflicts=("ref tidak ditemukan: $ref"); return 2; }
+  done
+  out=$(git merge-tree --write-tree --name-only --no-messages "$1" "$2" 2>&1); rc=$?
+  # baris pertama output yang valid selalu OID tree hasil merge
+  [[ "${out%%$'\n'*}" =~ '^[0-9a-f]{40,64}$' ]] || rc=2
+  case $rc in
+    0) return 0 ;;
+    1) _gfbpropen_conflicts=("${(@f)$(print -r -- "$out" | sed '1d; /^[[:space:]]*$/d' | sort -u)}"); return 1 ;;
+    *) _gfbpropen_conflicts=("${(@f)out}"); return 2 ;;
+  esac
+}
 
 # Branch sprint terbaru di origin, urut nama (dev_sprint_9b < dev_sprint_10a)
 _gfbpropen_newest_sprint() {
@@ -2255,6 +2277,29 @@ gfbpropen() {
     fi
     need_push=''
   fi
+
+  # ── cek conflict dengan base (simulasi merge, tidak mengubah apa pun) ──
+  local head_ref=$head
+  (( behind > 0 )) && head_ref="origin/$head"
+  _gfb_step "Cek conflict $head_ref → origin/$base…"
+  _gfbpropen_check_conflict "origin/$base" "$head_ref"
+  case $? in
+    0) _gfb_unwait; _gfb_ok "Tidak ada conflict dengan origin/$base." ;;
+    1)
+      _gfb_unwait
+      _gfb_err "Ada conflict antara $head_ref dan origin/$base (${#_gfbpropen_conflicts} file). PR tidak dibuat."
+      _gfb_sec "File conflict"
+      local cf; for cf in "${_gfbpropen_conflicts[@]}"; do _gfb_bullet "$cf"; done
+      _gfb_sec "Selesaikan dulu, misalnya"
+      _gfb_hint "git merge origin/$base" "resolve, commit, lalu jalankan gfbpropen lagi"
+      _gfb_hint "gfb -pm $base <branch-fix-conflict>/@" "atau buat branch fix-conflict dari $base"
+      print; return 1 ;;
+    *)
+      _gfb_unwait
+      _gfb_err "Cek conflict gagal (butuh git ≥ 2.38). PR tidak dibuat."
+      print -r -- "${(F)_gfbpropen_conflicts}" | sed 's/^/    /' >&2
+      return 1 ;;
+  esac
 
   if [ -n "$dry" ]; then
     _gfb_sec "Rencana (dry-run)"

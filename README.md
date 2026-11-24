@@ -161,7 +161,8 @@ gfbpropen --set-sandbox dev_sprint_9a   # set ingatan manual (juga --set-master,
 
 - **Rekomendasi tujuan**: sandbox kalau commit branch belum ada di base sandbox, master kalau semua commit sudah masuk sandbox. Kalau ada `dev_sprint_*` yang lebih baru (urutan nama) dari base yang diingat, ditawarkan untuk dipakai.
 - **Ingatan per repo**: base terakhir per jenis disimpan di git config lokal (`gfb.prsandbox` / `gfb.prmaster`), jadi beda tiap repo dan ikut terbaca di semua worktree repo itu. Diperbarui setiap PR berhasil dibuat.
-- **Alur**: fetch → pilih base → cek PR yang sudah terbuka (ditampilkan, tidak dibuat dobel) → daftar commit → push kalau head belum ada / belum terbaru di origin (tanpa force push) → generate judul & deskripsi → preview `[y]a / [e]dit ($EDITOR) / [r]egenerate / [n]batal` → `gh pr create`.
+- **Alur**: fetch → pilih base → cek PR yang sudah terbuka (ditampilkan, tidak dibuat dobel) → daftar commit → **cek conflict dengan `origin/<base>`** → push kalau head belum ada / belum terbaru di origin (tanpa force push) → generate judul & deskripsi → preview `[y]a / [e]dit ($EDITOR) / [r]egenerate / [n]batal` → `gh pr create`.
+- **Cek conflict**: sebelum push & buat PR, branch disimulasikan merge ke `origin/<base>` via `git merge-tree --write-tree` (tidak menyentuh working tree / index). Kalau ada conflict, proses **dibatalkan** (juga dengan `-f`), daftar file conflict ditampilkan beserta saran penyelesaian (`git merge origin/<base>` atau `gfb -pm <base> <branch-fix-conflict>/@`). Ikut berjalan saat dry-run (`-n`). Butuh git ≥ 2.38.
 - Semua langkah dikonfirmasi, kecuali `-f`. Kalau AI gagal, judul & deskripsi diambil dari daftar commit (`--no-ai` untuk langsung begitu).
 - Butuh `gh auth login` dan `GROQ_API_KEY` / `GEMINI_API_KEY` (lihat `gfbpr -h`).
 
