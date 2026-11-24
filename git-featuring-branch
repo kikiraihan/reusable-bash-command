@@ -1921,8 +1921,9 @@ $commits"
 #   gfbpropen --master           → ke master terakhir repo ini (juga --prod)
 #   gfbpropen dev_sprint_9a      → base eksplisit (jenis ditebak dari nama)
 #   gfbpropen -dev -f            → tanpa konfirmasi apa pun
-# Sebelum push & buat PR, dicek conflict dengan origin/<base> (git merge-tree);
-# kalau ada conflict, proses dibatalkan (juga dengan -f).
+# Sebelum push & buat PR, base di-pull dulu (fetch + fast-forward branch lokal <base>),
+# lalu dicek conflict dengan base itu (git merge-tree); pull gagal / ada conflict
+# → proses dibatalkan (juga dengan -f).
 # Base terakhir per jenis (sandbox / master) diingat per repo di git config lokal
 # (gfb.prsandbox / gfb.prmaster), jadi beda tiap repo & ikut ke semua worktree-nya.
 # ════════════════════════════════════════════════════════════════════
@@ -1933,8 +1934,9 @@ _gfbpropen_usage() {
   _gfb_text "master. Selalu merekomendasikan tujuan dan mengingat base terakhir per jenis,"
   _gfb_text "per repo. Judul & deskripsi dibuat AI dari commit (seperti gfbpr)."
   _gfb_text "Semua langkah dikonfirmasi dulu, kecuali pakai -f."
-  _gfb_text "Sebelum push & buat PR, dicek dulu conflict dengan base (simulasi merge via"
-  _gfb_text "git merge-tree, tanpa mengubah working tree). Kalau ada conflict → dibatalkan."
+  _gfb_text "Sebelum push & buat PR, base di-pull dulu (fetch + fast-forward branch lokal),"
+  _gfb_text "lalu dicek conflict dengan base itu (simulasi merge via git merge-tree, tanpa"
+  _gfb_text "mengubah working tree). Pull gagal / ada conflict → dibatalkan."
   _gfb_sec "Pemakaian"
   _gfb_use "gfbpropen [jenis] [base] [opsi] [-- <opsi gh pr create>]"
   _gfb_sec "Jenis tujuan"
@@ -1983,6 +1985,57 @@ _gfbpropen_mem_get() { git config --local --get "gfb.pr$1" 2>/dev/null; }
 _gfbpropen_mem_set() { git config --local "gfb.pr$1" "$2"; }
 
 _gfbpropen_remote_has() { git show-ref --verify -q "refs/remotes/origin/$1"; }
+
+# Pull base: fetch origin/<base> lalu fast-forward branch lokal <base> (kalau ada).
+# Kalau <base> ter-checkout di worktree lain → merge --ff-only di worktree itu (harus bersih).
+# return 0 = ok, 1 = gagal. Pesan di $_gfbpropen_sync_msg; ref pembanding di $_gfbpropen_base_ref.
+# Arg kedua "dry" = hanya fetch, branch lokal tidak diubah.
+_gfbpropen_sync_base() {
+  local base=$1 mode=$2 wt='' cur='' line before after n
+  typeset -g _gfbpropen_sync_msg='' _gfbpropen_base_ref="refs/remotes/origin/$1"
+  git fetch -q origin "+refs/heads/${base}:refs/remotes/origin/${base}" 2>/dev/null \
+    || { _gfbpropen_sync_msg="git fetch origin $base gagal; base tidak bisa dipastikan terbaru"; return 1; }
+  if ! git show-ref --verify -q "refs/heads/$base"; then
+    _gfbpropen_sync_msg="tidak ada branch lokal $base; dibandingkan dengan origin/$base (baru di-fetch)"
+    return 0
+  fi
+  before=$(git rev-parse "refs/heads/$base"); after=$(git rev-parse "refs/remotes/origin/$base")
+  if [ "$before" = "$after" ]; then
+    _gfbpropen_base_ref="refs/heads/$base"
+    _gfbpropen_sync_msg="$base lokal sudah sama dengan origin/$base"
+    return 0
+  fi
+  if ! git merge-base --is-ancestor "$before" "$after"; then
+    n=$(git rev-list --count "$after..$before")
+    _gfbpropen_sync_msg="$base lokal punya $n commit yang tidak ada di origin/$base (diverged), tidak bisa di-pull fast-forward"
+    return 1
+  fi
+  n=$(git rev-list --count "$before..$after")
+  if [ "$mode" = dry ]; then
+    _gfbpropen_sync_msg="$base lokal tertinggal $n commit (dry-run: tidak di-pull, dibandingkan dengan origin/$base)"
+    return 0
+  fi
+  while IFS= read -r line; do
+    case $line in
+      "worktree "*) cur=${line#worktree } ;;
+      "branch refs/heads/$base") wt=$cur ;;
+    esac
+  done < <(git worktree list --porcelain)
+  if [ -n "$wt" ]; then
+    if [ -n "$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+      _gfbpropen_sync_msg="$base ter-checkout di $wt dan ada perubahan belum di-commit; pull manual dulu"
+      return 1
+    fi
+    git -C "$wt" merge -q --ff-only "refs/remotes/origin/$base" >/dev/null 2>&1 \
+      || { _gfbpropen_sync_msg="pull $base di $wt gagal; pull manual dulu"; return 1; }
+  else
+    git update-ref "refs/heads/$base" "$after" "$before" \
+      || { _gfbpropen_sync_msg="update branch lokal $base gagal"; return 1; }
+  fi
+  _gfbpropen_base_ref="refs/heads/$base"
+  _gfbpropen_sync_msg="$base lokal di-pull: $n commit baru${wt:+ (worktree $wt)}"
+  return 0
+}
 
 # Simulasi merge <base-ref> ← <head-ref> tanpa menyentuh working tree / index.
 # return 0 = bersih, 1 = conflict (file conflict di $_gfbpropen_conflicts), 2 = cek gagal.
@@ -2278,16 +2331,26 @@ gfbpropen() {
     need_push=''
   fi
 
+  # ── pull base dulu, supaya pembanding = kondisi terbaru di origin ──
+  _gfb_step "Pull base $base dari origin…"
+  if ! _gfbpropen_sync_base "$base" "${dry:+dry}"; then
+    _gfb_unwait
+    _gfb_err "$_gfbpropen_sync_msg. PR tidak dibuat."
+    print; return 1
+  fi
+  _gfb_unwait; _gfb_ok "$_gfbpropen_sync_msg"
+
   # ── cek conflict dengan base (simulasi merge, tidak mengubah apa pun) ──
-  local head_ref=$head
+  local head_ref=$head base_name=${_gfbpropen_base_ref#refs/heads/}
+  base_name=${base_name#refs/remotes/}
   (( behind > 0 )) && head_ref="origin/$head"
-  _gfb_step "Cek conflict $head_ref → origin/$base…"
-  _gfbpropen_check_conflict "origin/$base" "$head_ref"
+  _gfb_step "Cek conflict $head_ref → $base_name…"
+  _gfbpropen_check_conflict "$_gfbpropen_base_ref" "$head_ref"
   case $? in
-    0) _gfb_unwait; _gfb_ok "Tidak ada conflict dengan origin/$base." ;;
+    0) _gfb_unwait; _gfb_ok "Tidak ada conflict dengan $base_name." ;;
     1)
       _gfb_unwait
-      _gfb_err "Ada conflict antara $head_ref dan origin/$base (${#_gfbpropen_conflicts} file). PR tidak dibuat."
+      _gfb_err "Ada conflict antara $head_ref dan $base_name (${#_gfbpropen_conflicts} file). PR tidak dibuat."
       _gfb_sec "File conflict"
       local cf; for cf in "${_gfbpropen_conflicts[@]}"; do _gfb_bullet "$cf"; done
       _gfb_sec "Selesaikan dulu, misalnya"
@@ -3914,7 +3977,7 @@ gfbrenew() {
       return 1
     fi
     # Branch ini mungkin juga ada di origin → perlu tahu apakah lokal tertinggal
-    git fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null
+    git fetch -q origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" 2>/dev/null
     base_ref="origin/$base"
   else
     base_ref="$base"
